@@ -1,11 +1,6 @@
-<<<<<<< HEAD
 Flask
 pandas
 openpyxl
+gspread
+oauth2client
 gunicorn
-=======
-Flask
-pandas
-openpyxl
-gunicorn
->>>>>>> 79599fd3c67511c0a0aad1aab47fd9acb423991f
