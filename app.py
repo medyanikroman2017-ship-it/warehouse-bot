@@ -19,6 +19,7 @@ import json
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+
 def connect_sheet():
     scope = [
         "https://spreadsheets.google.com/feeds",
@@ -28,13 +29,13 @@ def connect_sheet():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
 
     if not creds_json:
-        raise Exception("GOOGLE_CREDENTIALS not set in environment")
+        raise Exception("GOOGLE_CREDENTIALS not found in environment")
 
     creds_dict = json.loads(creds_json)
 
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-
     client = gspread.authorize(creds)
+
     return client.open("warehouse-system")
 
 # ===== LOAD ORDERS FROM GOOGLE SHEETS =====
