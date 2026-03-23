@@ -9,7 +9,7 @@ LOG_FILE = "log.xlsx"
 TTL = 1800
 MAX_WORKERS_PER_STORE = 2
 BIG_STORE_THRESHOLD = 1200
-SMALL_STORE_THRESHOLD = 300
+SMALL_STORE_THRESHOLD = 400
 
 # ===== LOAD EXCEL =====
 def load_orders():
@@ -20,10 +20,14 @@ def load_orders():
         if pd.isna(row["ORDERKEY"]) or pd.isna(row["CONSIGNEEKEY"]):
             continue
 
+        order_raw = str(row["ORDERKEY"]).split('.')[0]
+
         orders.append({
-            "order": str(row["ORDERKEY"]).zfill(9),
+            "order": str(int(order_raw)).zfill(10),
             "store": str(row["CONSIGNEEKEY"]),
-            "qty": int(row["TOTALQTY"]) if not pd.isna(row["TOTALQTY"]) else 0
+            "qty": int(row["TOTALQTY"]) if not pd.isna(row["TOTALQTY"]) else 0,
+            "susr3": str(row["SUSR3"]) if not pd.isna(row["SUSR3"]) else "",
+            "ref": str(row["REFERENCENUM"]) if not pd.isna(row["REFERENCENUM"]) else ""  # ✅ ДОБАВИЛИ
         })
 
     return orders
@@ -46,6 +50,7 @@ def log_to_excel(user, orders):
         rows.append({
             "user": user,
             "order": o["order"],
+            "reference": o["ref"],  # ✅ ДОБАВИЛИ
             "store": o["store"],
             "time": time.strftime("%Y-%m-%d %H:%M:%S")
         })
@@ -157,7 +162,6 @@ def assign_orders(user):
 
             if store_qty[s] <= SMALL_STORE_THRESHOLD and store_workers.get(s, 0) == 0:
                 extra_orders = stores[s]
-                SECOND_STORE = True
                 break
 
     assigned = orders + extra_orders
@@ -184,50 +188,38 @@ def get_stats():
 
 # ===== HTML =====
 HTML = """
-<h2>📦 Распределение заказов</h2>
+<h2>📦 Rozdzielanie zamówień (Распределение заказов)</h2>
 
 <form method="post">
-    <input name="user" placeholder="Введи свой ID" required>
-    <button>Получить задания</button>
+    <input name="user" placeholder="Wpisz ID (Введи ID)" required>
+    <button>Pobierz zadania (Получить задания)</button>
 </form>
 
 {% if orders %}
-    <h3>👤 {{user}}</h3>
-
-    {% if big %}
-    <div style="color:red; font-weight:bold;">
-    ⚠️ Большой магазин → несколько работников
-    </div>
-    {% endif %}
-
-    {% if second %}
-    <div style="color:orange; font-weight:bold;">
-    ➕ Добавлен второй магазин (малый объём)
-    </div>
-    {% endif %}
+    <h3>👤 Pracownik (Сотрудник): {{user}}</h3>
 
     {% set grouped = {} %}
     {% for o in orders %}
         {% if o.store not in grouped %}
             {% set _ = grouped.update({o.store: []}) %}
         {% endif %}
-        {% set _ = grouped[o.store].append(o.order) %}
+        {% set _ = grouped[o.store].append(o) %}
     {% endfor %}
 
     {% for store, items in grouped.items() %}
-        <h3>🏬 Магазин: {{store}}</h3>
+        <h3>🏬 Sklep (Магазин): {{store}}</h3>
         <ul>
         {% for i in items %}
-            <li>{{i}}</li>
+            <li>{{i.order}} ({{i.susr3}})</li>
         {% endfor %}
         </ul>
     {% endfor %}
 {% endif %}
 
 <hr>
-<h3>📊 Статистика</h3>
+<h3>📊 Statystyka (Статистика)</h3>
 {% for u, c in stats.items() %}
-<div>{{u}} → {{c}} ордеров</div>
+<div>{{u}} → {{c}} zamówień (заказов)</div>
 {% endfor %}
 """
 
