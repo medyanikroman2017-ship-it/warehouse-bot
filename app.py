@@ -4,12 +4,13 @@ import random, json, os, pandas as pd, time
 app = Flask(__name__)
 
 DATA_FILE = "assigned.json"
+PENDING_FILE = "pending.json"
 LOG_FILE = "log.xlsx"
 
 TTL = 1800
 MAX_WORKERS_PER_STORE = 2
 BIG_STORE_THRESHOLD = 1200
-SMALL_STORE_THRESHOLD = 400
+SMALL_STORE_THRESHOLD = 300
 
 # ===== LOAD EXCEL =====
 def load_orders():
@@ -20,14 +21,12 @@ def load_orders():
         if pd.isna(row["ORDERKEY"]) or pd.isna(row["CONSIGNEEKEY"]):
             continue
 
-        order_raw = str(row["ORDERKEY"]).split('.')[0]
-
         orders.append({
-            "order": str(int(order_raw)).zfill(10),
+            "order": str(row["ORDERKEY"]).zfill(10),  # ✅ 4 нуля
             "store": str(row["CONSIGNEEKEY"]),
             "qty": int(row["TOTALQTY"]) if not pd.isna(row["TOTALQTY"]) else 0,
             "susr3": str(row["SUSR3"]) if not pd.isna(row["SUSR3"]) else "",
-            "ref": str(row["REFERENCENUM"]) if not pd.isna(row["REFERENCENUM"]) else ""  # ✅ ДОБАВИЛИ
+            "ref": str(row["REFERENCENUM"]) if not pd.isna(row["REFERENCENUM"]) else ""
         })
 
     return orders
@@ -43,6 +42,17 @@ def save_data(data):
     with open(DATA_FILE, "w") as f:
         json.dump(data, f)
 
+# ===== PENDING =====
+def load_pending():
+    if os.path.exists(PENDING_FILE):
+        with open(PENDING_FILE) as f:
+            return json.load(f)
+    return {}
+
+def save_pending(data):
+    with open(PENDING_FILE, "w") as f:
+        json.dump(data, f)
+
 # ===== LOG =====
 def log_to_excel(user, orders):
     rows = []
@@ -50,8 +60,8 @@ def log_to_excel(user, orders):
         rows.append({
             "user": user,
             "order": o["order"],
-            "reference": o["ref"],  # ✅ ДОБАВИЛИ
             "store": o["store"],
+            "reference": o["ref"],  # ✅ добавлено
             "time": time.strftime("%Y-%m-%d %H:%M:%S")
         })
 
@@ -97,6 +107,12 @@ def count_workers(data):
 
 # ===== ASSIGN =====
 def assign_orders(user):
+    pending = load_pending()
+
+    # ✅ вернуть старые если есть
+    if user in pending:
+        return pending[user], False, False
+
     data = load_data()
     data = clean_expired(data)
 
@@ -108,7 +124,6 @@ def assign_orders(user):
 
     available = [o for o in ORDERS if o["order"] not in used]
 
-    # ===== GROUP =====
     stores = {}
     store_qty = {}
 
@@ -122,8 +137,7 @@ def assign_orders(user):
 
     store_workers = count_workers(data)
 
-    store_list = list(stores.keys())
-    store_list.sort(key=lambda s: get_priority(s))
+    store_list = sorted(stores.keys(), key=lambda s: get_priority(s))
 
     valid = []
 
@@ -151,7 +165,6 @@ def assign_orders(user):
 
     BIG_STORE = total_qty >= BIG_STORE_THRESHOLD
 
-    # ===== SMALL STORE LOGIC =====
     extra_orders = []
     SECOND_STORE = False
 
@@ -159,17 +172,32 @@ def assign_orders(user):
         for s in stores:
             if s == chosen:
                 continue
-
             if store_qty[s] <= SMALL_STORE_THRESHOLD and store_workers.get(s, 0) == 0:
                 extra_orders = stores[s]
+                SECOND_STORE = True
                 break
 
     assigned = orders + extra_orders
 
+    # ✅ сохраняем как pending
+    pending[user] = assigned
+    save_pending(pending)
+
+    return assigned, BIG_STORE, SECOND_STORE
+
+# ===== CONFIRM =====
+def confirm_orders(user):
+    pending = load_pending()
+    data = load_data()
+
+    if user not in pending:
+        return
+
+    orders = pending[user]
     now = time.time()
 
     data[user] = []
-    for o in assigned:
+    for o in orders:
         data[user].append({
             "order": o["order"],
             "store": o["store"],
@@ -177,9 +205,10 @@ def assign_orders(user):
         })
 
     save_data(data)
-    log_to_excel(user, assigned)
+    log_to_excel(user, orders)
 
-    return assigned, BIG_STORE, SECOND_STORE
+    del pending[user]
+    save_pending(pending)
 
 # ===== STATS =====
 def get_stats():
@@ -188,36 +217,45 @@ def get_stats():
 
 # ===== HTML =====
 HTML = """
-<h2>📦 Rozdzielanie zamówień (Распределение заказов)</h2>
+<h2>📦 Dystrybucja zamówień (распределение заказов)</h2>
 
 <form method="post">
-    <input name="user" placeholder="Wpisz ID (Введи ID)" required>
-    <button>Pobierz zadania (Получить задания)</button>
+    <input name="user" placeholder="Wpisz ID (введи ID)" required>
+    <button name="action" value="get">
+        Pobierz zamówienia (получить заказы)
+    </button>
 </form>
 
 {% if orders %}
-    <h3>👤 Pracownik (Сотрудник): {{user}}</h3>
+<h3>👤 {{user}}</h3>
 
-    {% set grouped = {} %}
-    {% for o in orders %}
-        {% if o.store not in grouped %}
-            {% set _ = grouped.update({o.store: []}) %}
-        {% endif %}
-        {% set _ = grouped[o.store].append(o) %}
-    {% endfor %}
+<form method="post">
+    <input type="hidden" name="user" value="{{user}}">
+    <button name="action" value="confirm">
+        ✅ Potwierdź odbiór (подтвердить получение)
+    </button>
+</form>
 
-    {% for store, items in grouped.items() %}
-        <h3>🏬 Sklep (Магазин): {{store}}</h3>
-        <ul>
-        {% for i in items %}
-            <li>{{i.order}} ({{i.susr3}})</li>
-        {% endfor %}
-        </ul>
-    {% endfor %}
+{% set grouped = {} %}
+{% for o in orders %}
+    {% if o.store not in grouped %}
+        {% set _ = grouped.update({o.store: []}) %}
+    {% endif %}
+    {% set _ = grouped[o.store].append(o) %}
+{% endfor %}
+
+{% for store, items in grouped.items() %}
+<h3>🏬 Sklep (магазин): {{store}}</h3>
+<ul>
+{% for i in items %}
+<li>{{i.order}} ({{i.susr3}})</li>
+{% endfor %}
+</ul>
+{% endfor %}
 {% endif %}
 
 <hr>
-<h3>📊 Statystyka (Статистика)</h3>
+<h3>📊 Statystyka (статистика)</h3>
 {% for u, c in stats.items() %}
 <div>{{u}} → {{c}} zamówień (заказов)</div>
 {% endfor %}
@@ -227,11 +265,15 @@ HTML = """
 @app.route("/", methods=["GET", "POST"])
 def index():
     user = request.form.get("user")
+    action = request.form.get("action")
 
     orders, big, second = [], False, False
 
     if user:
-        orders, big, second = assign_orders(user)
+        if action == "confirm":
+            confirm_orders(user)
+        else:
+            orders, big, second = assign_orders(user)
 
     stats = get_stats()
 
