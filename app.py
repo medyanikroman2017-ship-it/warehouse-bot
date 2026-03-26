@@ -22,7 +22,6 @@ def try_lock_orders(user, orders):
 
     for o in orders:
         key = f"lock:{o['order']}"
-
         success = redis_client.set(key, user, nx=True, ex=1800)
 
         if success:
@@ -34,7 +33,7 @@ def try_lock_orders(user, orders):
 
     return True
 
-# ===== GOOGLE SHEETS =====
+# ===== GOOGLE SHEETS CONNECT =====
 def connect_sheet():
     scope = [
         "https://spreadsheets.google.com/feeds",
@@ -42,6 +41,10 @@ def connect_sheet():
     ]
 
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
+
+    if not creds_json:
+        raise Exception("GOOGLE_CREDENTIALS not found in environment")
+
     creds_dict = json.loads(creds_json)
 
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -123,6 +126,20 @@ def clean_expired(data):
             del data[user]
     return data
 
+def sync_with_actual_orders(data, actual_orders):
+    actual_ids = set([o["order"] for o in actual_orders])
+
+    for user in list(data.keys()):
+        data[user] = [
+            o for o in data[user]
+            if o["order"] in actual_ids
+        ]
+
+        if not data[user]:
+            del data[user]
+
+    return data
+
 # ===== COUNT WORKERS =====
 def count_workers(data):
     store_workers = {}
@@ -143,6 +160,9 @@ def assign_orders(user):
     data = clean_expired(data)
 
     ORDERS = load_orders()
+
+    data = sync_with_actual_orders(data, ORDERS)
+    save_data(data)
 
     used = set()
     for u in data:
@@ -205,7 +225,7 @@ def assign_orders(user):
 
     assigned = orders + extra_orders
 
-    # 🔒 REDIS LOCK
+    # 🔒 Redis защита
     success = try_lock_orders(user, assigned)
 
     if not success:
@@ -243,11 +263,13 @@ def confirm_orders(user):
 
 # ===== HTML =====
 HTML = """
-<h2>📦 WMS - Dystrybucja zamówień</h2>
+<h2>📦 Dystrybucja zamówień (распределение заказов)</h2>
 
 <form method="post">
-    <input name="user" placeholder="Wpisz ID" required>
-    <button name="action" value="get">▶ Pobierz</button>
+    <input name="user" placeholder="Wpisz ID (введи ID)" required>
+    <button name="action" value="get">
+        Pobierz zamówienia (получить заказы)
+    </button>
 </form>
 
 {% if orders %}
@@ -255,20 +277,34 @@ HTML = """
 
 <form method="post">
     <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">✅ Potwierdź</button>
+    <button name="action" value="confirm">
+        ✅ Potwierdź odbiór (подтвердить получение)
+    </button>
 </form>
 
-<hr>
-
+{% set grouped = {} %}
 {% for o in orders %}
-<div style="padding:10px; margin:5px; border:1px solid #ccc;">
-    📦 <b>{{o.order}}</b>  
-    | 🏬 {{o.store}}  
-    | 📊 {{o.qty}} szt.
-</div>
+    {% if o.store not in grouped %}
+        {% set _ = grouped.update({o.store: []}) %}
+    {% endif %}
+    {% set _ = grouped[o.store].append(o) %}
 {% endfor %}
 
+{% for store, items in grouped.items() %}
+<h3>🏬 Sklep (магазин): {{store}}</h3>
+<ul>
+{% for i in items %}
+<li>{{i.order}} ({{i.susr3}}) — 📊 {{i.qty}} szt.</li>
+{% endfor %}
+</ul>
+{% endfor %}
 {% endif %}
+
+<hr>
+<h3>📊 Statystyka (статистика)</h3>
+{% for u, c in stats.items() %}
+<div>{{u}} → {{c}} zamówień (заказов)</div>
+{% endfor %}
 """
 
 # ===== ROUTE =====
@@ -285,11 +321,21 @@ def index():
         else:
             orders, big, second = assign_orders(user)
 
+    stats = get_stats()
+
     return render_template_string(
         HTML,
         orders=orders,
-        user=user
+        user=user,
+        stats=stats,
+        big=big,
+        second=second
     )
+
+# ===== STATS =====
+def get_stats():
+    data = load_data()
+    return {u: len(data[u]) for u in data}
 
 # ===== RUN =====
 app.run(host="0.0.0.0", port=5000)
