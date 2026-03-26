@@ -2,6 +2,7 @@ from flask import Flask, request, render_template_string
 import random, json, os, time
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import redis
 
 app = Flask(__name__)
 
@@ -13,13 +14,27 @@ MAX_WORKERS_PER_STORE = 2
 BIG_STORE_THRESHOLD = 1200
 SMALL_STORE_THRESHOLD = 400
 
-# ===== GOOGLE SHEETS CONNECT =====
-import os
-import json
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+# ===== REDIS =====
+redis_client = redis.from_url(os.environ.get("REDIS_URL"))
 
+def try_lock_orders(user, orders):
+    locked = []
 
+    for o in orders:
+        key = f"lock:{o['order']}"
+
+        success = redis_client.set(key, user, nx=True, ex=1800)
+
+        if success:
+            locked.append(o)
+        else:
+            for l in locked:
+                redis_client.delete(f"lock:{l['order']}")
+            return False
+
+    return True
+
+# ===== GOOGLE SHEETS =====
 def connect_sheet():
     scope = [
         "https://spreadsheets.google.com/feeds",
@@ -27,10 +42,6 @@ def connect_sheet():
     ]
 
     creds_json = os.environ.get("GOOGLE_CREDENTIALS")
-
-    if not creds_json:
-        raise Exception("GOOGLE_CREDENTIALS not found in environment")
-
     creds_dict = json.loads(creds_json)
 
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -38,7 +49,7 @@ def connect_sheet():
 
     return client.open("warehouse-system")
 
-# ===== LOAD ORDERS FROM GOOGLE SHEETS =====
+# ===== LOAD ORDERS =====
 def load_orders():
     sheet = connect_sheet().worksheet("orders")
     data = sheet.get_all_records()
@@ -56,7 +67,7 @@ def load_orders():
 
     return orders
 
-# ===== LOG TO GOOGLE SHEETS =====
+# ===== LOG =====
 def log_to_sheet(user, orders):
     sheet = connect_sheet().worksheet("log")
 
@@ -125,7 +136,6 @@ def count_workers(data):
 def assign_orders(user):
     pending = load_pending()
 
-    # вернуть если уже есть
     if user in pending:
         return pending[user], False, False
 
@@ -195,6 +205,12 @@ def assign_orders(user):
 
     assigned = orders + extra_orders
 
+    # 🔒 REDIS LOCK
+    success = try_lock_orders(user, assigned)
+
+    if not success:
+        return [], False, False
+
     pending[user] = assigned
     save_pending(pending)
 
@@ -225,20 +241,13 @@ def confirm_orders(user):
     del pending[user]
     save_pending(pending)
 
-# ===== STATS =====
-def get_stats():
-    data = load_data()
-    return {u: len(data[u]) for u in data}
-
 # ===== HTML =====
 HTML = """
-<h2>📦 Dystrybucja zamówień (распределение заказов)</h2>
+<h2>📦 WMS - Dystrybucja zamówień</h2>
 
 <form method="post">
-    <input name="user" placeholder="Wpisz ID (введи ID)" required>
-    <button name="action" value="get">
-        Pobierz zamówienia (получить заказы)
-    </button>
+    <input name="user" placeholder="Wpisz ID" required>
+    <button name="action" value="get">▶ Pobierz</button>
 </form>
 
 {% if orders %}
@@ -246,34 +255,20 @@ HTML = """
 
 <form method="post">
     <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">
-        ✅ Potwierdź odbiór (подтвердить получение)
-    </button>
+    <button name="action" value="confirm">✅ Potwierdź</button>
 </form>
 
-{% set grouped = {} %}
-{% for o in orders %}
-    {% if o.store not in grouped %}
-        {% set _ = grouped.update({o.store: []}) %}
-    {% endif %}
-    {% set _ = grouped[o.store].append(o) %}
-{% endfor %}
-
-{% for store, items in grouped.items() %}
-<h3>🏬 Sklep (магазин): {{store}}</h3>
-<ul>
-{% for i in items %}
-<li>{{i.order}} ({{i.susr3}})</li>
-{% endfor %}
-</ul>
-{% endfor %}
-{% endif %}
-
 <hr>
-<h3>📊 Statystyka (статистика)</h3>
-{% for u, c in stats.items() %}
-<div>{{u}} → {{c}} zamówień (заказов)</div>
+
+{% for o in orders %}
+<div style="padding:10px; margin:5px; border:1px solid #ccc;">
+    📦 <b>{{o.order}}</b>  
+    | 🏬 {{o.store}}  
+    | 📊 {{o.qty}} szt.
+</div>
 {% endfor %}
+
+{% endif %}
 """
 
 # ===== ROUTE =====
@@ -290,15 +285,10 @@ def index():
         else:
             orders, big, second = assign_orders(user)
 
-    stats = get_stats()
-
     return render_template_string(
         HTML,
         orders=orders,
-        user=user,
-        stats=stats,
-        big=big,
-        second=second
+        user=user
     )
 
 # ===== RUN =====
