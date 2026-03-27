@@ -57,19 +57,14 @@ def load_orders(force_refresh=False):
     ]
 
     r.setex(ORDERS_CACHE_KEY, ORDERS_TTL, json.dumps(orders))
-
     return orders
 
 # ===== PRIORITY =====
 def get_priority(store):
-    if store.startswith("25"):
-        return 1
-    if store.startswith(("412", "413")):
-        return 2
-    if store.startswith(("41", "42")):
-        return 3
-    if store.startswith("496"):
-        return 4
+    if store.startswith("25"): return 1
+    if store.startswith(("412", "413")): return 2
+    if store.startswith(("41", "42")): return 3
+    if store.startswith("496"): return 4
     return 4
 
 # ===== LUA LOCK =====
@@ -180,41 +175,43 @@ def confirm_orders(user):
 
     for o in orders:
         oid = o["order"]
-
         pipe.rpush(f"assigned:{user}", oid)
-        pipe.hincrby("store_workers", o["store"], 1)
         pipe.persist(f"lock:{oid}")
         pipe.sadd("assigned_orders", oid)
+
+    # увеличиваем воркер только 1 раз на магазин
+    stores = set(o["store"] for o in orders)
+    for s in stores:
+        pipe.hincrby("store_workers", s, 1)
 
     pipe.delete(f"pending:{user}")
     pipe.execute()
 
     r.set(f"user_orders:{user}", json.dumps(orders))
-
     log_to_sheet(user, orders)
 
-# ===== FINISH ONE =====
-def finish_one_order(user, order_id):
+# ===== FINISH STORE =====
+def finish_store(user, store):
     raw = r.get(f"user_orders:{user}")
     if not raw:
         return
 
     orders = json.loads(raw)
-    order_obj = next((o for o in orders if o["order"] == order_id), None)
-    if not order_obj:
-        return
-
-    store = order_obj["store"]
+    to_remove = [o for o in orders if o["store"] == store]
 
     pipe = r.pipeline()
-    pipe.delete(f"lock:{order_id}")
-    pipe.srem("assigned_orders", order_id)
-    pipe.lrem(f"assigned:{user}", 0, order_id)
+
+    for o in to_remove:
+        oid = o["order"]
+        pipe.delete(f"lock:{oid}")
+        pipe.srem("assigned_orders", oid)
+        pipe.lrem(f"assigned:{user}", 0, oid)
+        pipe.srem("locked_orders", oid)
+
     pipe.hincrby("store_workers", store, -1)
-    pipe.srem("locked_orders", order_id)
     pipe.execute()
 
-    new_orders = [o for o in orders if o["order"] != order_id]
+    new_orders = [o for o in orders if o["store"] != store]
 
     if new_orders:
         r.set(f"user_orders:{user}", json.dumps(new_orders))
@@ -253,7 +250,7 @@ HTML = """
 
 <form method="post">
     <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">✅ Potwierdź odbióр</button>
+    <button name="action" value="confirm">✅ Potwierdź odbiór</button>
 </form>
 
 {% set grouped = {} %}
@@ -266,19 +263,23 @@ HTML = """
 
 {% for store, items in grouped.items() %}
 <h3>🏬 {{store}}</h3>
+
 <ul>
 {% for i in items %}
 <li>
     {{i.order}} ({{i.susr3}}) — {{i.qty}}
-
-    <form method="post" style="display:inline;">
-        <input type="hidden" name="user" value="{{user}}">
-        <input type="hidden" name="order_id" value="{{i.order}}">
-        <button name="action" value="finish_one">🏁</button>
-    </form>
 </li>
 {% endfor %}
 </ul>
+
+<b>Total: {{ items | sum(attribute='qty') }}</b>
+
+<form method="post">
+    <input type="hidden" name="user" value="{{user}}">
+    <input type="hidden" name="store" value="{{store}}">
+    <button name="action" value="finish_store">✅ Zakończ sklep</button>
+</form>
+
 {% endfor %}
 {% endif %}
 
@@ -295,6 +296,7 @@ def index():
     user = request.form.get("user")
     action = request.form.get("action")
     order_id = request.form.get("order_id")
+    store = request.form.get("store")
 
     orders, big, second = [], False, False
 
@@ -302,8 +304,8 @@ def index():
         if action == "confirm":
             confirm_orders(user)
 
-        elif action == "finish_one" and order_id:
-            finish_one_order(user, order_id)
+        elif action == "finish_store" and store:
+            finish_store(user, store)
 
         elif action == "refresh":
             load_orders(force_refresh=True)
