@@ -7,8 +7,8 @@ import redis
 app = Flask(__name__)
 
 # ===== CONFIG =====
-PENDING_TTL = 600     # 10 минут
-LOCK_TTL = 600        # до confirm
+PENDING_TTL = 600
+LOCK_TTL = 600
 MAX_WORKERS_PER_STORE = 2
 BIG_STORE_THRESHOLD = 1200
 SMALL_STORE_THRESHOLD = 400
@@ -22,7 +22,7 @@ r = redis.from_url(os.environ.get("REDIS_URL"), decode_responses=True)
 def connect_sheet():
     scope = [
         "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive"
+        "https://www.googleapis.com/auth/drive",
     ]
     creds = json.loads(os.environ.get("GOOGLE_CREDENTIALS"))
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds, scope)
@@ -30,31 +30,46 @@ def connect_sheet():
     return client.open_by_key("1dtSO224vSpxaR5Jm3wNQ09SiMjSjLGkgL1C4lRfg7YM")
 
 # ===== ORDERS CACHE =====
-def load_orders():
+def load_orders(force_refresh=False):
+    if force_refresh:
+        r.delete(ORDERS_CACHE_KEY)
+
     cached = r.get(ORDERS_CACHE_KEY)
-    if cached:
+
+    if cached and not force_refresh:
+        print("📦 LOAD FROM CACHE")
         return json.loads(cached)
+
+    print("📡 LOAD FROM GOOGLE SHEETS")
 
     sheet = connect_sheet().worksheet("orders")
     data = sheet.get_all_records()
 
-    orders = [{
-        "order": str(row["ORDERKEY"]).zfill(10),
-        "store": str(row["CONSIGNEEKEY"]),
-        "qty": int(row["TOTALQTY"]) if row["TOTALQTY"] else 0,
-        "susr3": str(row["SUSR3"] or ""),
-        "ref": str(row["REFERENCENUM"] or "")
-    } for row in data]
+    orders = [
+        {
+            "order": str(row["ORDERKEY"]).zfill(10),
+            "store": str(row["CONSIGNEEKEY"]),
+            "qty": int(row["TOTALQTY"]) if row["TOTALQTY"] else 0,
+            "susr3": str(row["SUSR3"] or ""),
+            "ref": str(row["REFERENCENUM"] or ""),
+        }
+        for row in data
+    ]
 
     r.setex(ORDERS_CACHE_KEY, ORDERS_TTL, json.dumps(orders))
+
     return orders
 
 # ===== PRIORITY =====
 def get_priority(store):
-    if store.startswith("25"): return 1
-    if store.startswith(("412", "413")): return 2
-    if store.startswith(("41", "42")): return 3
-    if store.startswith("496"): return 4
+    if store.startswith("25"):
+        return 1
+    if store.startswith(("412", "413")):
+        return 2
+    if store.startswith(("41", "42")):
+        return 3
+    if store.startswith("496"):
+        return 4
     return 4
 
 # ===== LUA LOCK =====
@@ -118,7 +133,9 @@ def assign_orders(user):
         w = workers.get(s, 0)
         qty = store_qty[s]
 
-        if (qty >= BIG_STORE_THRESHOLD and w < MAX_WORKERS_PER_STORE) or (qty < BIG_STORE_THRESHOLD and w == 0):
+        if (qty >= BIG_STORE_THRESHOLD and w < MAX_WORKERS_PER_STORE) or (
+            qty < BIG_STORE_THRESHOLD and w == 0
+        ):
             valid.append(s)
 
     if not valid:
@@ -135,7 +152,11 @@ def assign_orders(user):
 
     if total_qty <= SMALL_STORE_THRESHOLD:
         for s in stores:
-            if s != chosen and store_qty[s] <= SMALL_STORE_THRESHOLD and workers.get(s, 0) == 0:
+            if (
+                s != chosen
+                and store_qty[s] <= SMALL_STORE_THRESHOLD
+                and workers.get(s, 0) == 0
+            ):
                 assigned += stores[s]
                 SECOND = True
                 break
@@ -162,11 +183,7 @@ def confirm_orders(user):
 
         pipe.rpush(f"assigned:{user}", oid)
         pipe.hincrby("store_workers", o["store"], 1)
-
-        # делаем lock постоянным
         pipe.persist(f"lock:{oid}")
-
-        # фиксируем навсегда
         pipe.sadd("assigned_orders", oid)
 
     pipe.delete(f"pending:{user}")
@@ -228,6 +245,7 @@ HTML = """
 <form method="post">
     <input name="user" placeholder="Wpisz ID" required>
     <button name="action" value="get">Pobierz zamówienia</button>
+    <button name="action" value="refresh">🔄 Refresh</button>
 </form>
 
 {% if orders %}
@@ -235,7 +253,7 @@ HTML = """
 
 <form method="post">
     <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">✅ Potwierdź odbiór</button>
+    <button name="action" value="confirm">✅ Potwierdź odbióр</button>
 </form>
 
 {% set grouped = {} %}
@@ -283,8 +301,14 @@ def index():
     if user:
         if action == "confirm":
             confirm_orders(user)
+
         elif action == "finish_one" and order_id:
             finish_one_order(user, order_id)
+
+        elif action == "refresh":
+            load_orders(force_refresh=True)
+            orders, big, second = assign_orders(user)
+
         else:
             orders, big, second = assign_orders(user)
 
