@@ -1,10 +1,5 @@
 Flask
-pandas
-openpyxl
+redis
 gspread
 oauth2client
 gunicorn
-<<<<<<< HEAD
-=======
-redis
->>>>>>> 68b6fb9 (add qty + redis)

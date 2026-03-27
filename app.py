@@ -6,270 +6,228 @@ import redis
 
 app = Flask(__name__)
 
-DATA_FILE = "assigned.json"
-PENDING_FILE = "pending.json"
-
-TTL = 1800
+# ===== CONFIG =====
+PENDING_TTL = 600     # 10 минут
+LOCK_TTL = 600        # до confirm
 MAX_WORKERS_PER_STORE = 2
 BIG_STORE_THRESHOLD = 1200
 SMALL_STORE_THRESHOLD = 400
 
-# ===== REDIS =====
-redis_client = redis.from_url(os.environ.get("REDIS_URL"))
+ORDERS_CACHE_KEY = "orders_cache"
+ORDERS_TTL = 30
 
-def try_lock_orders(user, orders):
-    locked = []
+r = redis.from_url(os.environ.get("REDIS_URL"), decode_responses=True)
 
-    for o in orders:
-        key = f"lock:{o['order']}"
-        success = redis_client.set(key, user, nx=True, ex=1800)
-
-        if success:
-            locked.append(o)
-        else:
-            for l in locked:
-                redis_client.delete(f"lock:{l['order']}")
-            return False
-
-    return True
-
-# ===== GOOGLE SHEETS CONNECT =====
+# ===== GOOGLE SHEETS =====
 def connect_sheet():
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive"
     ]
-
-    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
-
-    if not creds_json:
-        raise Exception("GOOGLE_CREDENTIALS not found in environment")
-
-    creds_dict = json.loads(creds_json)
-
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+    creds = json.loads(os.environ.get("GOOGLE_CREDENTIALS"))
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds, scope)
     client = gspread.authorize(creds)
+    return client.open_by_key("1dtSO224vSpxaR5Jm3wNQ09SiMjSjLGkgL1C4lRfg7YM")
 
-    return client.open("warehouse-system")
-
-# ===== LOAD ORDERS =====
+# ===== ORDERS CACHE =====
 def load_orders():
+    cached = r.get(ORDERS_CACHE_KEY)
+    if cached:
+        return json.loads(cached)
+
     sheet = connect_sheet().worksheet("orders")
     data = sheet.get_all_records()
 
-    orders = []
+    orders = [{
+        "order": str(row["ORDERKEY"]).zfill(10),
+        "store": str(row["CONSIGNEEKEY"]),
+        "qty": int(row["TOTALQTY"]) if row["TOTALQTY"] else 0,
+        "susr3": str(row["SUSR3"] or ""),
+        "ref": str(row["REFERENCENUM"] or "")
+    } for row in data]
 
-    for row in data:
-        orders.append({
-            "order": str(row["ORDERKEY"]).zfill(10),
-            "store": str(row["CONSIGNEEKEY"]),
-            "qty": int(row["TOTALQTY"]) if row["TOTALQTY"] else 0,
-            "susr3": str(row["SUSR3"]) if row["SUSR3"] else "",
-            "ref": str(row["REFERENCENUM"]) if row["REFERENCENUM"] else ""
-        })
-
+    r.setex(ORDERS_CACHE_KEY, ORDERS_TTL, json.dumps(orders))
     return orders
-
-# ===== LOG =====
-def log_to_sheet(user, orders):
-    sheet = connect_sheet().worksheet("log")
-
-    for o in orders:
-        sheet.append_row([
-            user,
-            o["order"],
-            o["store"],
-            o["ref"],
-            time.strftime("%Y-%m-%d %H:%M:%S")
-        ])
-
-# ===== DATA =====
-def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE) as f:
-            return json.load(f)
-    return {}
-
-def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
-
-# ===== PENDING =====
-def load_pending():
-    if os.path.exists(PENDING_FILE):
-        with open(PENDING_FILE) as f:
-            return json.load(f)
-    return {}
-
-def save_pending(data):
-    with open(PENDING_FILE, "w") as f:
-        json.dump(data, f)
 
 # ===== PRIORITY =====
 def get_priority(store):
-    if store.startswith("25"):
-        return 1
-    elif store.startswith("412") or store.startswith("413"):
-        return 2
-    elif store.startswith("42") or store.startswith("41"):
-        return 3
-    elif store.startswith("496"):
-        return 4
+    if store.startswith("25"): return 1
+    if store.startswith(("412", "413")): return 2
+    if store.startswith(("41", "42")): return 3
+    if store.startswith("496"): return 4
     return 4
 
-# ===== CLEAN TTL =====
-def clean_expired(data):
-    now = time.time()
-    for user in list(data.keys()):
-        data[user] = [o for o in data[user] if now - o["time"] < TTL]
-        if not data[user]:
-            del data[user]
-    return data
+# ===== LUA LOCK =====
+LOCK_SCRIPT = r.register_script("""
+local user = ARGV[1]
+local ttl = tonumber(ARGV[2])
 
-def sync_with_actual_orders(data, actual_orders):
-    actual_ids = set([o["order"] for o in actual_orders])
+for i,key in ipairs(KEYS) do
+    if redis.call("EXISTS", key) == 1 then
+        return 0
+    end
+end
 
-    for user in list(data.keys()):
-        data[user] = [
-            o for o in data[user]
-            if o["order"] in actual_ids
-        ]
+for i,key in ipairs(KEYS) do
+    redis.call("SET", key, user, "EX", ttl)
+    redis.call("SADD", "locked_orders", string.sub(key,6))
+end
 
-        if not data[user]:
-            del data[user]
+return 1
+""")
 
-    return data
+def lock_orders(user, orders):
+    keys = [f"lock:{o['order']}" for o in orders]
+    return LOCK_SCRIPT(keys=keys, args=[user, LOCK_TTL]) == 1
 
-# ===== COUNT WORKERS =====
-def count_workers(data):
-    store_workers = {}
-    for user in data:
-        stores = set([o["store"] for o in data[user]])
-        for s in stores:
-            store_workers[s] = store_workers.get(s, 0) + 1
-    return store_workers
+# ===== STORE WORKERS =====
+def get_store_workers():
+    return {k: int(v) for k, v in r.hgetall("store_workers").items()}
 
 # ===== ASSIGN =====
 def assign_orders(user):
-    pending = load_pending()
+    pending = r.get(f"pending:{user}")
+    if pending:
+        return json.loads(pending), False, False
 
-    if user in pending:
-        return pending[user], False, False
+    orders = load_orders()
 
-    data = load_data()
-    data = clean_expired(data)
+    locked = r.smembers("locked_orders")
+    assigned_global = r.smembers("assigned_orders")
 
-    ORDERS = load_orders()
+    available = [
+        o for o in orders
+        if o["order"] not in locked
+        and o["order"] not in assigned_global
+    ]
 
-    data = sync_with_actual_orders(data, ORDERS)
-    save_data(data)
+    if not available:
+        return [], False, False
 
-    used = set()
-    for u in data:
-        used.update([o["order"] for o in data[u]])
-
-    available = [o for o in ORDERS if o["order"] not in used]
-
-    stores = {}
-    store_qty = {}
+    stores, store_qty = {}, {}
 
     for o in available:
         s = o["store"]
         stores.setdefault(s, []).append(o)
         store_qty[s] = store_qty.get(s, 0) + o["qty"]
 
-    if not stores:
-        return [], False, False
-
-    store_workers = count_workers(data)
-
-    store_list = sorted(stores.keys(), key=lambda s: get_priority(s))
+    workers = get_store_workers()
 
     valid = []
-
-    for s in store_list:
-        workers = store_workers.get(s, 0)
+    for s in sorted(stores, key=get_priority):
+        w = workers.get(s, 0)
         qty = store_qty[s]
 
-        if qty >= BIG_STORE_THRESHOLD:
-            if workers < MAX_WORKERS_PER_STORE:
-                valid.append(s)
-        else:
-            if workers == 0:
-                valid.append(s)
+        if (qty >= BIG_STORE_THRESHOLD and w < MAX_WORKERS_PER_STORE) or (qty < BIG_STORE_THRESHOLD and w == 0):
+            valid.append(s)
 
     if not valid:
         return [], False, False
 
     best_p = get_priority(valid[0])
-    best = [s for s in valid if get_priority(s) == best_p]
+    chosen = random.choice([s for s in valid if get_priority(s) == best_p])
 
-    chosen = random.choice(best)
-
-    orders = stores[chosen]
+    assigned = stores[chosen]
     total_qty = store_qty[chosen]
 
-    BIG_STORE = total_qty >= BIG_STORE_THRESHOLD
-
-    extra_orders = []
-    SECOND_STORE = False
+    BIG = total_qty >= BIG_STORE_THRESHOLD
+    SECOND = False
 
     if total_qty <= SMALL_STORE_THRESHOLD:
         for s in stores:
-            if s == chosen:
-                continue
-            if store_qty[s] <= SMALL_STORE_THRESHOLD and store_workers.get(s, 0) == 0:
-                extra_orders = stores[s]
-                SECOND_STORE = True
+            if s != chosen and store_qty[s] <= SMALL_STORE_THRESHOLD and workers.get(s, 0) == 0:
+                assigned += stores[s]
+                SECOND = True
                 break
 
-    assigned = orders + extra_orders
-
-    # 🔒 Redis защита
-    success = try_lock_orders(user, assigned)
-
-    if not success:
+    if not lock_orders(user, assigned):
         return [], False, False
 
-    pending[user] = assigned
-    save_pending(pending)
+    r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
 
-    return assigned, BIG_STORE, SECOND_STORE
+    return assigned, BIG, SECOND
 
 # ===== CONFIRM =====
 def confirm_orders(user):
-    pending = load_pending()
-    data = load_data()
-
-    if user not in pending:
+    raw = r.get(f"pending:{user}")
+    if not raw:
         return
 
-    orders = pending[user]
-    now = time.time()
+    orders = json.loads(raw)
 
-    data[user] = []
+    pipe = r.pipeline()
+
     for o in orders:
-        data[user].append({
-            "order": o["order"],
-            "store": o["store"],
-            "time": now
-        })
+        oid = o["order"]
 
-    save_data(data)
+        pipe.rpush(f"assigned:{user}", oid)
+        pipe.hincrby("store_workers", o["store"], 1)
+
+        # делаем lock постоянным
+        pipe.persist(f"lock:{oid}")
+
+        # фиксируем навсегда
+        pipe.sadd("assigned_orders", oid)
+
+    pipe.delete(f"pending:{user}")
+    pipe.execute()
+
+    r.set(f"user_orders:{user}", json.dumps(orders))
+
     log_to_sheet(user, orders)
 
-    del pending[user]
-    save_pending(pending)
+# ===== FINISH ONE =====
+def finish_one_order(user, order_id):
+    raw = r.get(f"user_orders:{user}")
+    if not raw:
+        return
+
+    orders = json.loads(raw)
+    order_obj = next((o for o in orders if o["order"] == order_id), None)
+    if not order_obj:
+        return
+
+    store = order_obj["store"]
+
+    pipe = r.pipeline()
+    pipe.delete(f"lock:{order_id}")
+    pipe.srem("assigned_orders", order_id)
+    pipe.lrem(f"assigned:{user}", 0, order_id)
+    pipe.hincrby("store_workers", store, -1)
+    pipe.srem("locked_orders", order_id)
+    pipe.execute()
+
+    new_orders = [o for o in orders if o["order"] != order_id]
+
+    if new_orders:
+        r.set(f"user_orders:{user}", json.dumps(new_orders))
+    else:
+        r.delete(f"user_orders:{user}")
+
+# ===== LOG =====
+def log_to_sheet(user, orders):
+    sheet = connect_sheet().worksheet("log")
+    for o in orders:
+        sheet.append_row([
+            user, o["order"], o["store"], o["ref"],
+            time.strftime("%Y-%m-%d %H:%M:%S")
+        ])
+
+# ===== STATS =====
+def get_stats():
+    stats = {}
+    for k in r.scan_iter("assigned:*"):
+        user = k.split(":")[1]
+        stats[user] = r.llen(k)
+    return stats
 
 # ===== HTML =====
 HTML = """
-<h2>📦 Dystrybucja zamówień (распределение заказов)</h2>
+<h2>📦 Dystrybucja zamówień</h2>
 
 <form method="post">
-    <input name="user" placeholder="Wpisz ID (введи ID)" required>
-    <button name="action" value="get">
-        Pobierz zamówienia (получить заказы)
-    </button>
+    <input name="user" placeholder="Wpisz ID" required>
+    <button name="action" value="get">Pobierz zamówienia</button>
 </form>
 
 {% if orders %}
@@ -277,9 +235,7 @@ HTML = """
 
 <form method="post">
     <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">
-        ✅ Potwierdź odbiór (подтвердить получение)
-    </button>
+    <button name="action" value="confirm">✅ Potwierdź odbiór</button>
 </form>
 
 {% set grouped = {} %}
@@ -291,19 +247,27 @@ HTML = """
 {% endfor %}
 
 {% for store, items in grouped.items() %}
-<h3>🏬 Sklep (магазин): {{store}}</h3>
+<h3>🏬 {{store}}</h3>
 <ul>
 {% for i in items %}
-<li>{{i.order}} ({{i.susr3}}) — 📊 {{i.qty}} szt.</li>
+<li>
+    {{i.order}} ({{i.susr3}}) — {{i.qty}}
+
+    <form method="post" style="display:inline;">
+        <input type="hidden" name="user" value="{{user}}">
+        <input type="hidden" name="order_id" value="{{i.order}}">
+        <button name="action" value="finish_one">🏁</button>
+    </form>
+</li>
 {% endfor %}
 </ul>
 {% endfor %}
 {% endif %}
 
 <hr>
-<h3>📊 Statystyka (статистика)</h3>
+<h3>📊 Statystyka</h3>
 {% for u, c in stats.items() %}
-<div>{{u}} → {{c}} zamówień (заказов)</div>
+<div>{{u}} → {{c}}</div>
 {% endfor %}
 """
 
@@ -312,30 +276,25 @@ HTML = """
 def index():
     user = request.form.get("user")
     action = request.form.get("action")
+    order_id = request.form.get("order_id")
 
     orders, big, second = [], False, False
 
     if user:
         if action == "confirm":
             confirm_orders(user)
+        elif action == "finish_one" and order_id:
+            finish_one_order(user, order_id)
         else:
             orders, big, second = assign_orders(user)
-
-    stats = get_stats()
 
     return render_template_string(
         HTML,
         orders=orders,
         user=user,
-        stats=stats,
+        stats=get_stats(),
         big=big,
         second=second
     )
 
-# ===== STATS =====
-def get_stats():
-    data = load_data()
-    return {u: len(data[u]) for u in data}
-
-# ===== RUN =====
 app.run(host="0.0.0.0", port=5000)
