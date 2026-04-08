@@ -38,12 +38,18 @@ def log_worker():
 
     BATCH_SIZE = 20
     buffer = []
+    processing_items = []
 
     while True:
         item = r.rpoplpush("log_queue", "log_processing")
 
         if item:
             data = json.loads(item)
+
+            # защита от дублей
+            if r.sismember("logged_ids", data.get("id")):
+                r.lrem("log_processing", 1, item)
+                continue
 
             for o in data["orders"]:
                 buffer.append([
@@ -54,10 +60,21 @@ def log_worker():
                     time.strftime("%Y-%m-%d %H:%M:%S")
                 ])
 
+            processing_items.append(item)
+
         if len(buffer) >= BATCH_SIZE:
             try:
                 sheet.append_rows(buffer)
+
+                # помечаем как записанные
+                for item in processing_items:
+                    data = json.loads(item)
+                    r.sadd("logged_ids", data.get("id"))
+                    r.lrem("log_processing", 1, item)
+
                 buffer = []
+                processing_items = []
+
             except Exception as e:
                 print("LOG ERROR:", e)
                 time.sleep(2)
@@ -253,11 +270,14 @@ def confirm_orders(user):
     pipe.delete(f"pending:{user}")
     pipe.execute()
 
-    # ЛОГ В ОЧЕРЕДЬ (ВАЖНО)
-    r.rpush("log_queue", json.dumps({
+    # УНИКАЛЬНЫЙ ID события
+    log_event = {
+        "id": f"{user}_{time.time()}",
         "user": user,
         "orders": orders
-    }))
+    }
+
+    r.rpush("log_queue", json.dumps(log_event))
 
 # ===== HTML =====
 HTML = """
