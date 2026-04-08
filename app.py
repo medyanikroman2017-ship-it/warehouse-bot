@@ -300,16 +300,21 @@ HTML = """
 <h3>👤 {{user}}</h3>
 
 <form method="post">
-    <input name="user" placeholder="Wpisz ID" required>
-    <button name="action" value="get">Pobierz zamówienia</button>
+    <input type="hidden" name="user" value="{{user}}">
+    <button name="action" value="confirm">✅ Potwierdź odbiór</button>
 </form>
+
+{% for o in orders %}
+<div>{{o.order}} | {{o.store}} | {{o.qty}} | {{o.susr3}}</div>
+{% endfor %}
+
+{% endif %}
 
 {% if user and not orders %}
 <div style="color:gray; margin-top:20px;">
     ❌ Brak dostępnych zamówień do pobrania
 </div>
 {% endif %}
-"""
 
 # ===== ROUTE =====
 @app.route("/", methods=["GET", "POST"])
