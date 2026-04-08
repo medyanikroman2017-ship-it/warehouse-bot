@@ -2,6 +2,7 @@ from flask import Flask, request, render_template_string
 import random, json, os, time, threading
 import redis
 import psycopg2
+import pandas as pd
 
 app = Flask(__name__)
 
@@ -19,6 +20,37 @@ DB_URL = os.environ.get("DATABASE_URL")
 def get_conn():
     return psycopg2.connect(DB_URL)
 
+# ===== UPLOAD =====
+def upload_orders(file):
+    df = pd.read_excel(file)
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # очистка старых заказов
+    cur.execute("DELETE FROM orders")
+
+    for _, row in df.iterrows():
+        try:
+            cur.execute(
+                """
+                INSERT INTO orders (order_id, store, qty, susr3, ref)
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    str(row["ORDERKEY"]).zfill(10),
+                    str(row["CONSIGNEEKEY"]),
+                    int(row["TOTALQTY"]),
+                    str(row["SUSR3"] or ""),
+                    str(row["REFERENCENUM"] or "")
+                )
+            )
+        except Exception as e:
+            print("UPLOAD ERROR:", e)
+
+    conn.commit()
+    conn.close()
+
 # ===== SPLIT =====
 def split_replen_and_other(orders):
     replen, other = [], []
@@ -29,14 +61,12 @@ def split_replen_and_other(orders):
             other.append(o)
     return replen, other
 
-# ===== LOAD ORDERS FROM DB =====
-def load_orders(force_refresh=False):
+# ===== LOAD =====
+def load_orders():
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute("SELECT order_id, store, qty, susr3, ref FROM orders")
     rows = cur.fetchall()
-
     conn.close()
 
     return [
@@ -60,7 +90,7 @@ def get_priority(store):
         return 3
     return 4
 
-# ===== LUA LOCK =====
+# ===== LOCK =====
 LOCK_SCRIPT = r.register_script("""
 local user = ARGV[1]
 local ttl = tonumber(ARGV[2])
@@ -83,7 +113,7 @@ def lock_orders(user, orders):
     keys = [f"lock:{o['order']}" for o in orders]
     return LOCK_SCRIPT(keys=keys, args=[user, LOCK_TTL]) == 1
 
-# ===== STORE WORKERS =====
+# ===== WORKERS =====
 def get_store_workers():
     return {k: int(v) for k, v in r.hgetall("store_workers").items()}
 
@@ -148,7 +178,6 @@ def assign_orders(user):
             assigned = other if other else replen
         else:
             return [], False, False
-
     else:
         assigned = list(store_orders)
 
@@ -193,65 +222,6 @@ def confirm_orders(user):
     pipe.delete(f"pending:{user}")
     pipe.execute()
 
-    r.set(f"user_orders:{user}", json.dumps(orders))
-
-    # LOG QUEUE
-    r.rpush("log_queue", json.dumps({
-        "user": user,
-        "orders": orders
-    }))
-
-# ===== FINISH =====
-def finish_one_order(user, order_id):
-    raw = r.get(f"user_orders:{user}")
-    if not raw:
-        return
-
-    orders = json.loads(raw)
-    order_obj = next((o for o in orders if o["order"] == order_id), None)
-    if not order_obj:
-        return
-
-    store = order_obj["store"]
-
-    pipe = r.pipeline()
-    pipe.delete(f"lock:{order_id}")
-    pipe.srem("assigned_orders", order_id)
-    pipe.lrem(f"assigned:{user}", 0, order_id)
-    pipe.hincrby("store_workers", store, -1)
-    pipe.srem("locked_orders", order_id)
-    pipe.execute()
-
-# ===== LOG WORKER =====
-def log_worker():
-    while True:
-        item = r.lpop("log_queue")
-        if not item:
-            time.sleep(1)
-            continue
-
-        data = json.loads(item)
-
-        try:
-            conn = get_conn()
-            cur = conn.cursor()
-
-            for o in data["orders"]:
-                cur.execute(
-                    "INSERT INTO logs (user_id, order_id, store, ref) VALUES (%s,%s,%s,%s)",
-                    (data["user"], o["order"], o["store"], o["ref"])
-                )
-
-            conn.commit()
-            conn.close()
-
-        except Exception as e:
-            print("LOG ERROR:", e)
-            r.rpush("log_queue", item)
-            time.sleep(2)
-
-threading.Thread(target=log_worker, daemon=True).start()
-
 # ===== HTML =====
 HTML = """
 <h2>📦 Dystrybucja zamówień</h2>
@@ -261,44 +231,26 @@ HTML = """
     <button name="action" value="get">Pobierz zamówienia</button>
 </form>
 
+{% if user == "admin" %}
+<form method="post" enctype="multipart/form-data">
+    <input type="hidden" name="user" value="{{user}}">
+    <input type="file" name="file" required>
+    <button name="action" value="upload">📤 Upload Excel</button>
+</form>
+{% endif %}
+
 {% if orders %}
 <h3>👤 {{user}}</h3>
 
 <form method="post">
     <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">✅ Potwierdź odbióр</button>
+    <button name="action" value="confirm">✅ Potwierdź odbiór</button>
 </form>
 
-{% set grouped = {} %}
 {% for o in orders %}
-    {% if o.store not in grouped %}
-        {% set _ = grouped.update({o.store: []}) %}
-    {% endif %}
-    {% set _ = grouped[o.store].append(o) %}
-{% endfor %}
-
-{% for store, items in grouped.items() %}
-<h3>🏬 {{store}}</h3>
-<ul>
-{% for i in items %}
-<li>
-    {{i.order}} ({{i.susr3}}) — {{i.qty}}
-    <form method="post" style="display:inline;">
-        <input type="hidden" name="user" value="{{user}}">
-        <input type="hidden" name="order_id" value="{{i.order}}">
-        <button name="action" value="finish_one">🏁</button>
-    </form>
-</li>
-{% endfor %}
-</ul>
+<div>{{o.order}} | {{o.store}} | {{o.qty}} | {{o.susr3}}</div>
 {% endfor %}
 {% endif %}
-
-<hr>
-<h3>📊 Statystyка</h3>
-{% for u, c in stats.items() %}
-<div>{{u}} → {{c}}</div>
-{% endfor %}
 """
 
 # ===== ROUTE =====
@@ -306,33 +258,24 @@ HTML = """
 def index():
     user = request.form.get("user")
     action = request.form.get("action")
-    order_id = request.form.get("order_id")
+    file = request.files.get("file")
 
-    orders, big, second = [], False, False
+    orders = []
 
     if user:
-        if action == "confirm":
+        if action == "upload" and user == "admin" and file:
+            upload_orders(file)
+
+        elif action == "confirm":
             confirm_orders(user)
-        elif action == "finish_one" and order_id:
-            finish_one_order(user, order_id)
+
         else:
-            orders, big, second = assign_orders(user)
+            orders, _, _ = assign_orders(user)
 
     return render_template_string(
         HTML,
         orders=orders,
         user=user,
-        stats=get_stats(),
-        big=big,
-        second=second
     )
-
-# ===== STATS =====
-def get_stats():
-    stats = {}
-    for k in r.scan_iter("assigned:*"):
-        user = k.split(":")[1]
-        stats[user] = r.llen(k)
-    return stats
 
 app.run(host="0.0.0.0", port=5000)
