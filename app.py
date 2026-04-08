@@ -307,7 +307,6 @@ HTML = """
 {% for o in orders %}
 <div>{{o.order}} | {{o.store}} | {{o.qty}} | {{o.susr3}}</div>
 {% endfor %}
-
 {% endif %}
 
 {% if user and not orders %}
@@ -315,6 +314,7 @@ HTML = """
     ❌ Brak dostępnych zamówień do pobrania
 </div>
 {% endif %}
+"""
 
 # ===== ROUTE =====
 @app.route("/", methods=["GET", "POST"])
