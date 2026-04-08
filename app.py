@@ -3,22 +3,68 @@ import random, json, os, time, threading
 import redis
 import psycopg2
 import pandas as pd
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 
 app = Flask(__name__)
 
 # ===== CONFIG =====
 PENDING_TTL = 600
 LOCK_TTL = 600
-MAX_WORKERS_PER_STORE = 2
 BIG_STORE_THRESHOLD = 1200
 SMALL_STORE_THRESHOLD = 400
 
 r = redis.from_url(os.environ.get("REDIS_URL"), decode_responses=True)
-
 DB_URL = os.environ.get("DATABASE_URL")
 
+# ===== DB =====
 def get_conn():
-    return psycopg2.connect(DB_URL)
+    return psycopg2.connect(DB_URL, sslmode="require")
+
+# ===== GOOGLE SHEETS =====
+def connect_sheet():
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = json.loads(os.environ.get("GOOGLE_CREDENTIALS"))
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds, scope)
+    client = gspread.authorize(creds)
+    return client.open_by_key("1dtSO224vSpxaR5Jm3wNQ09SiMjSjLGkgL1C4lRfg7YM")
+
+# ===== LOG WORKER (НАДЕЖНЫЙ) =====
+def log_worker():
+    sheet = connect_sheet().worksheet("log")
+
+    BATCH_SIZE = 20
+    buffer = []
+
+    while True:
+        item = r.lpop("log_queue")
+
+        if item:
+            data = json.loads(item)
+
+            for o in data["orders"]:
+                buffer.append([
+                    data["user"],
+                    o["order"],
+                    o["store"],
+                    o["ref"],
+                    time.strftime("%Y-%m-%d %H:%M:%S")
+                ])
+
+        if len(buffer) >= BATCH_SIZE:
+            try:
+                sheet.append_rows(buffer)
+                buffer = []
+            except Exception as e:
+                print("LOG ERROR:", e)
+                time.sleep(2)
+
+        time.sleep(1)
+
+threading.Thread(target=log_worker, daemon=True).start()
 
 # ===== UPLOAD =====
 def upload_orders(file):
@@ -27,7 +73,6 @@ def upload_orders(file):
     conn = get_conn()
     cur = conn.cursor()
 
-    # очистка старых заказов
     cur.execute("DELETE FROM orders")
 
     for _, row in df.iterrows():
@@ -51,16 +96,6 @@ def upload_orders(file):
     conn.commit()
     conn.close()
 
-# ===== SPLIT =====
-def split_replen_and_other(orders):
-    replen, other = [], []
-    for o in orders:
-        if "replen" in o["susr3"].lower():
-            replen.append(o)
-        else:
-            other.append(o)
-    return replen, other
-
 # ===== LOAD =====
 def load_orders():
     conn = get_conn()
@@ -79,6 +114,16 @@ def load_orders():
         }
         for r in rows
     ]
+
+# ===== SPLIT =====
+def split_replen_and_other(orders):
+    replen, other = [], []
+    for o in orders:
+        if "replen" in o["susr3"].lower():
+            replen.append(o)
+        else:
+            other.append(o)
+    return replen, other
 
 # ===== PRIORITY =====
 def get_priority(store):
@@ -113,7 +158,6 @@ def lock_orders(user, orders):
     keys = [f"lock:{o['order']}" for o in orders]
     return LOCK_SCRIPT(keys=keys, args=[user, LOCK_TTL]) == 1
 
-# ===== WORKERS =====
 def get_store_workers():
     return {k: int(v) for k, v in r.hgetall("store_workers").items()}
 
@@ -166,7 +210,6 @@ def assign_orders(user):
     total_qty = store_qty[chosen]
 
     BIG = total_qty >= BIG_STORE_THRESHOLD
-    SECOND = False
 
     if BIG:
         replen, other = split_replen_and_other(store_orders)
@@ -179,18 +222,7 @@ def assign_orders(user):
         else:
             return [], False, False
     else:
-        assigned = list(store_orders)
-
-        if total_qty <= SMALL_STORE_THRESHOLD:
-            for s in stores:
-                if (
-                    s != chosen
-                    and store_qty[s] <= SMALL_STORE_THRESHOLD
-                    and workers.get(s, 0) == 0
-                ):
-                    assigned += stores[s]
-                    SECOND = True
-                    break
+        assigned = store_orders
 
     if not assigned:
         return [], False, False
@@ -200,7 +232,7 @@ def assign_orders(user):
 
     r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
 
-    return assigned, BIG, SECOND
+    return assigned, BIG, False
 
 # ===== CONFIRM =====
 def confirm_orders(user):
@@ -214,13 +246,18 @@ def confirm_orders(user):
 
     for o in orders:
         oid = o["order"]
-        pipe.rpush(f"assigned:{user}", oid)
         pipe.hincrby("store_workers", o["store"], 1)
         pipe.persist(f"lock:{oid}")
         pipe.sadd("assigned_orders", oid)
 
     pipe.delete(f"pending:{user}")
     pipe.execute()
+
+    # ЛОГ В ОЧЕРЕДЬ (ВАЖНО)
+    r.rpush("log_queue", json.dumps({
+        "user": user,
+        "orders": orders
+    }))
 
 # ===== HTML =====
 HTML = """
