@@ -40,7 +40,7 @@ def log_worker():
     buffer = []
 
     while True:
-        item = r.lpop("log_queue")
+        item = r.rpoplpush("log_queue", "log_processing")
 
         if item:
             data = json.loads(item)
