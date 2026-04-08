@@ -4,4 +4,6 @@ gunicorn
 psycopg2-binary
 pandas
 openpyxl
+gspread
+oauth2client
   
