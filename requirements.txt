@@ -2,3 +2,5 @@ Flask
 redis
 gunicorn
 psycopg2-binary
+pandas
+openpyxl
