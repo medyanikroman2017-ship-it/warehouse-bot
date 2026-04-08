@@ -300,13 +300,14 @@ HTML = """
 <h3>👤 {{user}}</h3>
 
 <form method="post">
-    <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">✅ Potwierdź odbiór</button>
+    <input name="user" placeholder="Wpisz ID" required>
+    <button name="action" value="get">Pobierz zamówienia</button>
 </form>
 
-{% for o in orders %}
-<div>{{o.order}} | {{o.store}} | {{o.qty}} | {{o.susr3}}</div>
-{% endfor %}
+{% if user and not orders %}
+<div style="color:gray; margin-top:20px;">
+    ❌ Brak dostępnych zamówień do pobrania
+</div>
 {% endif %}
 """
 
