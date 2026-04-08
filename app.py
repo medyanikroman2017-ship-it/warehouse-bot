@@ -1,8 +1,7 @@
 from flask import Flask, request, render_template_string
-import random, json, os, time
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+import random, json, os, time, threading
 import redis
+import psycopg2
 
 app = Flask(__name__)
 
@@ -13,58 +12,52 @@ MAX_WORKERS_PER_STORE = 2
 BIG_STORE_THRESHOLD = 1200
 SMALL_STORE_THRESHOLD = 400
 
-ORDERS_CACHE_KEY = "orders_cache"
-ORDERS_TTL = 30
-
 r = redis.from_url(os.environ.get("REDIS_URL"), decode_responses=True)
 
-# ===== GOOGLE SHEETS =====
-def connect_sheet():
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds = json.loads(os.environ.get("GOOGLE_CREDENTIALS"))
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds, scope)
-    client = gspread.authorize(creds)
-    return client.open_by_key("1dtSO224vSpxaR5Jm3wNQ09SiMjSjLGkgL1C4lRfg7YM")
+DB_URL = os.environ.get("DATABASE_URL")
 
-# ===== ORDERS CACHE =====
+def get_conn():
+    return psycopg2.connect(DB_URL)
+
+# ===== SPLIT =====
+def split_replen_and_other(orders):
+    replen, other = [], []
+    for o in orders:
+        if "replen" in o["susr3"].lower():
+            replen.append(o)
+        else:
+            other.append(o)
+    return replen, other
+
+# ===== LOAD ORDERS FROM DB =====
 def load_orders(force_refresh=False):
-    if force_refresh:
-        r.delete(ORDERS_CACHE_KEY)
+    conn = get_conn()
+    cur = conn.cursor()
 
-    cached = r.get(ORDERS_CACHE_KEY)
+    cur.execute("SELECT order_id, store, qty, susr3, ref FROM orders")
+    rows = cur.fetchall()
 
-    if cached and not force_refresh:
-        print("📦 LOAD FROM CACHE")
-        return json.loads(cached)
+    conn.close()
 
-    print("📡 LOAD FROM GOOGLE SHEETS")
-
-    sheet = connect_sheet().worksheet("orders")
-    data = sheet.get_all_records()
-
-    orders = [
+    return [
         {
-            "order": str(row["ORDERKEY"]).zfill(10),
-            "store": str(row["CONSIGNEEKEY"]),
-            "qty": int(row["TOTALQTY"]) if row["TOTALQTY"] else 0,
-            "susr3": str(row["SUSR3"] or ""),
-            "ref": str(row["REFERENCENUM"] or ""),
+            "order": r[0],
+            "store": r[1],
+            "qty": r[2],
+            "susr3": r[3] or "",
+            "ref": r[4] or "",
         }
-        for row in data
+        for r in rows
     ]
-
-    r.setex(ORDERS_CACHE_KEY, ORDERS_TTL, json.dumps(orders))
-    return orders
 
 # ===== PRIORITY =====
 def get_priority(store):
-    if store.startswith("25"): return 1
-    if store.startswith(("412", "413")): return 2
-    if store.startswith(("41", "42")): return 3
-    if store.startswith("496"): return 4
+    if store.startswith("25"):
+        return 1
+    if store.startswith(("412", "413")):
+        return 2
+    if store.startswith(("41", "42")):
+        return 3
     return 4
 
 # ===== LUA LOCK =====
@@ -128,7 +121,7 @@ def assign_orders(user):
         w = workers.get(s, 0)
         qty = store_qty[s]
 
-        if (qty >= BIG_STORE_THRESHOLD and w < MAX_WORKERS_PER_STORE) or (
+        if (qty >= BIG_STORE_THRESHOLD and w < 2) or (
             qty < BIG_STORE_THRESHOLD and w == 0
         ):
             valid.append(s)
@@ -139,22 +132,39 @@ def assign_orders(user):
     best_p = get_priority(valid[0])
     chosen = random.choice([s for s in valid if get_priority(s) == best_p])
 
-    assigned = stores[chosen]
+    store_orders = stores[chosen]
     total_qty = store_qty[chosen]
 
     BIG = total_qty >= BIG_STORE_THRESHOLD
     SECOND = False
 
-    if total_qty <= SMALL_STORE_THRESHOLD:
-        for s in stores:
-            if (
-                s != chosen
-                and store_qty[s] <= SMALL_STORE_THRESHOLD
-                and workers.get(s, 0) == 0
-            ):
-                assigned += stores[s]
-                SECOND = True
-                break
+    if BIG:
+        replen, other = split_replen_and_other(store_orders)
+        current_workers = workers.get(chosen, 0)
+
+        if current_workers == 0:
+            assigned = replen if replen else store_orders
+        elif current_workers == 1:
+            assigned = other if other else replen
+        else:
+            return [], False, False
+
+    else:
+        assigned = list(store_orders)
+
+        if total_qty <= SMALL_STORE_THRESHOLD:
+            for s in stores:
+                if (
+                    s != chosen
+                    and store_qty[s] <= SMALL_STORE_THRESHOLD
+                    and workers.get(s, 0) == 0
+                ):
+                    assigned += stores[s]
+                    SECOND = True
+                    break
+
+    if not assigned:
+        return [], False, False
 
     if not lock_orders(user, assigned):
         return [], False, False
@@ -176,64 +186,71 @@ def confirm_orders(user):
     for o in orders:
         oid = o["order"]
         pipe.rpush(f"assigned:{user}", oid)
+        pipe.hincrby("store_workers", o["store"], 1)
         pipe.persist(f"lock:{oid}")
         pipe.sadd("assigned_orders", oid)
-
-    # увеличиваем воркер только 1 раз на магазин
-    stores = set(o["store"] for o in orders)
-    for s in stores:
-        pipe.hincrby("store_workers", s, 1)
 
     pipe.delete(f"pending:{user}")
     pipe.execute()
 
     r.set(f"user_orders:{user}", json.dumps(orders))
-    log_to_sheet(user, orders)
 
-# ===== FINISH STORE =====
-def finish_store(user, store):
+    # LOG QUEUE
+    r.rpush("log_queue", json.dumps({
+        "user": user,
+        "orders": orders
+    }))
+
+# ===== FINISH =====
+def finish_one_order(user, order_id):
     raw = r.get(f"user_orders:{user}")
     if not raw:
         return
 
     orders = json.loads(raw)
-    to_remove = [o for o in orders if o["store"] == store]
+    order_obj = next((o for o in orders if o["order"] == order_id), None)
+    if not order_obj:
+        return
+
+    store = order_obj["store"]
 
     pipe = r.pipeline()
-
-    for o in to_remove:
-        oid = o["order"]
-        pipe.delete(f"lock:{oid}")
-        pipe.srem("assigned_orders", oid)
-        pipe.lrem(f"assigned:{user}", 0, oid)
-        pipe.srem("locked_orders", oid)
-
+    pipe.delete(f"lock:{order_id}")
+    pipe.srem("assigned_orders", order_id)
+    pipe.lrem(f"assigned:{user}", 0, order_id)
     pipe.hincrby("store_workers", store, -1)
+    pipe.srem("locked_orders", order_id)
     pipe.execute()
 
-    new_orders = [o for o in orders if o["store"] != store]
+# ===== LOG WORKER =====
+def log_worker():
+    while True:
+        item = r.lpop("log_queue")
+        if not item:
+            time.sleep(1)
+            continue
 
-    if new_orders:
-        r.set(f"user_orders:{user}", json.dumps(new_orders))
-    else:
-        r.delete(f"user_orders:{user}")
+        data = json.loads(item)
 
-# ===== LOG =====
-def log_to_sheet(user, orders):
-    sheet = connect_sheet().worksheet("log")
-    for o in orders:
-        sheet.append_row([
-            user, o["order"], o["store"], o["ref"],
-            time.strftime("%Y-%m-%d %H:%M:%S")
-        ])
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
 
-# ===== STATS =====
-def get_stats():
-    stats = {}
-    for k in r.scan_iter("assigned:*"):
-        user = k.split(":")[1]
-        stats[user] = r.llen(k)
-    return stats
+            for o in data["orders"]:
+                cur.execute(
+                    "INSERT INTO logs (user_id, order_id, store, ref) VALUES (%s,%s,%s,%s)",
+                    (data["user"], o["order"], o["store"], o["ref"])
+                )
+
+            conn.commit()
+            conn.close()
+
+        except Exception as e:
+            print("LOG ERROR:", e)
+            r.rpush("log_queue", item)
+            time.sleep(2)
+
+threading.Thread(target=log_worker, daemon=True).start()
 
 # ===== HTML =====
 HTML = """
@@ -242,7 +259,6 @@ HTML = """
 <form method="post">
     <input name="user" placeholder="Wpisz ID" required>
     <button name="action" value="get">Pobierz zamówienia</button>
-    <button name="action" value="refresh">🔄 Refresh</button>
 </form>
 
 {% if orders %}
@@ -250,7 +266,7 @@ HTML = """
 
 <form method="post">
     <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">✅ Potwierdź odbiór</button>
+    <button name="action" value="confirm">✅ Potwierdź odbióр</button>
 </form>
 
 {% set grouped = {} %}
@@ -263,28 +279,23 @@ HTML = """
 
 {% for store, items in grouped.items() %}
 <h3>🏬 {{store}}</h3>
-
 <ul>
 {% for i in items %}
 <li>
     {{i.order}} ({{i.susr3}}) — {{i.qty}}
+    <form method="post" style="display:inline;">
+        <input type="hidden" name="user" value="{{user}}">
+        <input type="hidden" name="order_id" value="{{i.order}}">
+        <button name="action" value="finish_one">🏁</button>
+    </form>
 </li>
 {% endfor %}
 </ul>
-
-<b>Total: {{ items | sum(attribute='qty') }}</b>
-
-<form method="post">
-    <input type="hidden" name="user" value="{{user}}">
-    <input type="hidden" name="store" value="{{store}}">
-    <button name="action" value="finish_store">✅ Zakończ sklep</button>
-</form>
-
 {% endfor %}
 {% endif %}
 
 <hr>
-<h3>📊 Statystyka</h3>
+<h3>📊 Statystyка</h3>
 {% for u, c in stats.items() %}
 <div>{{u}} → {{c}}</div>
 {% endfor %}
@@ -296,21 +307,14 @@ def index():
     user = request.form.get("user")
     action = request.form.get("action")
     order_id = request.form.get("order_id")
-    store = request.form.get("store")
 
     orders, big, second = [], False, False
 
     if user:
         if action == "confirm":
             confirm_orders(user)
-
-        elif action == "finish_store" and store:
-            finish_store(user, store)
-
-        elif action == "refresh":
-            load_orders(force_refresh=True)
-            orders, big, second = assign_orders(user)
-
+        elif action == "finish_one" and order_id:
+            finish_one_order(user, order_id)
         else:
             orders, big, second = assign_orders(user)
 
@@ -322,5 +326,13 @@ def index():
         big=big,
         second=second
     )
+
+# ===== STATS =====
+def get_stats():
+    stats = {}
+    for k in r.scan_iter("assigned:*"):
+        user = k.split(":")[1]
+        stats[user] = r.llen(k)
+    return stats
 
 app.run(host="0.0.0.0", port=5000)
