@@ -3,3 +3,4 @@ redis
 gspread
 oauth2client
 gunicorn
+psycopg2-binary
