@@ -10,8 +10,8 @@ from oauth2client.service_account import ServiceAccountCredentials
 app = Flask(__name__)
 
 # ===== CONFIG =====
-PENDING_TTL = 600
-LOCK_TTL = 600
+PENDING_TTL = 120   # ← ИЗМЕНЕНО (2 минуты)
+LOCK_TTL = 120      # ← ИЗМЕНЕНО (2 минуты)
 BIG_STORE_THRESHOLD = 1200
 SMALL_STORE_THRESHOLD = 400
 
@@ -204,7 +204,6 @@ def assign_orders(user):
         key=lambda x: (get_store_priority(x), int(x))
     )
 
-    # ===== выбор store по приоритету =====
     chosen = None
     for s in sorted_stores:
         w = workers.get(s, 0)
@@ -220,7 +219,6 @@ def assign_orders(user):
     store_orders = stores[chosen]
     total_qty = store_qty[chosen]
 
-    # ===== >1200 =====
     if total_qty >= BIG_STORE_THRESHOLD:
         replen, other = split_replen_and_other(store_orders)
         w = workers.get(chosen, 0)
@@ -232,7 +230,6 @@ def assign_orders(user):
         else:
             return [], False, False
 
-    # ===== <400 =====
     else:
         assigned = list(store_orders)
 
@@ -298,7 +295,7 @@ HTML = """
 
 <form method="post">
     <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">✅ Potwierdź odbiór</button>
+    <button name="action" value="confirm">✅ Potwierdź odbióр</button>
 </form>
 
 {% for o in orders %}
