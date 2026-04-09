@@ -95,14 +95,13 @@ def log_worker():
 
 threading.Thread(target=log_worker, daemon=True).start()
 
-# ===== UPLOAD (УЛУЧШЕННЫЙ) =====
+# ===== UPLOAD =====
 def upload_orders(file):
     df = pd.read_excel(file)
 
     conn = get_conn()
     cur = conn.cursor()
 
-    # быстрее чем DELETE
     cur.execute("TRUNCATE TABLE orders")
 
     data = []
@@ -119,7 +118,6 @@ def upload_orders(file):
         except:
             pass
 
-    # 🚀 BULK INSERT
     execute_values(
         cur,
         """
@@ -241,18 +239,34 @@ def assign_orders(user):
 
     BIG = total_qty >= BIG_STORE_THRESHOLD
 
+    # ===== 🔥 FIX 1200+ =====
     if BIG:
         replen, other = split_replen_and_other(store_orders)
         current_workers = workers.get(chosen, 0)
 
-        if current_workers == 0:
-            assigned = replen if replen else store_orders
-        elif current_workers == 1:
-            assigned = other if other else replen
+        if replen and other:
+            if current_workers == 0:
+                assigned = replen
+            elif current_workers == 1:
+                assigned = other
+            else:
+                return [], False, False
         else:
-            return [], False, False
+            assigned = store_orders
+
+    # ===== 🔥 FIX <400 =====
     else:
-        assigned = store_orders
+        assigned = list(store_orders)
+
+        if total_qty <= SMALL_STORE_THRESHOLD:
+            for s in sorted_stores:
+                if s != chosen:
+                    if (
+                        store_qty[s] <= SMALL_STORE_THRESHOLD
+                        and workers.get(s, 0) == 0
+                    ):
+                        assigned += stores[s]
+                        break
 
     if not assigned:
         return [], False, False
@@ -313,7 +327,7 @@ HTML = """
 
 <form method="post">
     <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">✅ Potwierdź odbióр</button>
+    <button name="action" value="confirm">✅ Potwierdź odbiór</button>
 </form>
 
 {% for o in orders %}
@@ -321,7 +335,7 @@ HTML = """
 {% endfor %}
 {% endif %}
 
-{% if user and not orders %}
+{% if no_orders %}
 <div style="color:gray; margin-top:20px;">
     ❌ Brak dostępnych zamówień do pobrania
 </div>
@@ -336,19 +350,25 @@ def index():
     file = request.files.get("file")
 
     orders = []
+    no_orders = False
 
     if user:
         if action == "upload" and user == "admin" and file:
             upload_orders(file)
+
         elif action == "confirm":
             confirm_orders(user)
+
         else:
             orders, _, _ = assign_orders(user)
+            if user and not orders:
+                no_orders = True
 
     return render_template_string(
         HTML,
         orders=orders,
         user=user,
+        no_orders=no_orders
     )
 
 app.run(host="0.0.0.0", port=5000)
