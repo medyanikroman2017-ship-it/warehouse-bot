@@ -1,5 +1,5 @@
 from flask import Flask, request, render_template_string
-import random, json, os, time, threading
+import json, os, time, threading
 import redis
 import psycopg2
 import pandas as pd
@@ -50,10 +50,6 @@ def connect_sheet():
 def log_worker():
     sheet = connect_sheet().worksheet("log")
 
-    BATCH_SIZE = 20
-    buffer = []
-    processing_items = []
-
     while True:
         item = r.rpoplpush("log_queue", "log_processing")
 
@@ -64,28 +60,21 @@ def log_worker():
                 r.lrem("log_processing", 1, item)
                 continue
 
-            for o in data["orders"]:
-                buffer.append([
-                    data["user"],
-                    o["order"],
-                    o["store"],
-                    o["ref"],
-                    time.strftime("%Y-%m-%d %H:%M:%S")
-                ])
-
-            processing_items.append(item)
-
-        if len(buffer) >= BATCH_SIZE:
             try:
-                sheet.append_rows(buffer)
+                rows = []
+                for o in data["orders"]:
+                    rows.append([
+                        data["user"],
+                        o["order"],
+                        o["store"],
+                        o["ref"],
+                        time.strftime("%Y-%m-%d %H:%M:%S")
+                    ])
 
-                for item in processing_items:
-                    data = json.loads(item)
-                    r.sadd("logged_ids", data.get("id"))
-                    r.lrem("log_processing", 1, item)
+                sheet.append_rows(rows)
 
-                buffer = []
-                processing_items = []
+                r.sadd("logged_ids", data.get("id"))
+                r.lrem("log_processing", 1, item)
 
             except Exception as e:
                 print("LOG ERROR:", e)
@@ -118,12 +107,8 @@ def upload_orders(file):
         except:
             pass
 
-    execute_values(
-        cur,
-        """
-        INSERT INTO orders (order_id, store, qty, susr3, ref)
-        VALUES %s
-        """,
+    execute_values(cur,
+        "INSERT INTO orders (order_id, store, qty, susr3, ref) VALUES %s",
         data
     )
 
@@ -219,15 +204,13 @@ def assign_orders(user):
         key=lambda x: (get_store_priority(x), int(x))
     )
 
+    # ===== выбор store по приоритету =====
     chosen = None
-
     for s in sorted_stores:
         w = workers.get(s, 0)
         qty = store_qty[s]
 
-        if (qty >= BIG_STORE_THRESHOLD and w < 2) or (
-            qty < BIG_STORE_THRESHOLD and w == 0
-        ):
+        if (qty >= BIG_STORE_THRESHOLD and w < 2) or (qty < BIG_STORE_THRESHOLD and w == 0):
             chosen = s
             break
 
@@ -237,36 +220,27 @@ def assign_orders(user):
     store_orders = stores[chosen]
     total_qty = store_qty[chosen]
 
-    BIG = total_qty >= BIG_STORE_THRESHOLD
-
-    # ===== 🔥 FIX 1200+ =====
-    if BIG:
+    # ===== >1200 =====
+    if total_qty >= BIG_STORE_THRESHOLD:
         replen, other = split_replen_and_other(store_orders)
-        current_workers = workers.get(chosen, 0)
+        w = workers.get(chosen, 0)
 
-        if replen and other:
-            if current_workers == 0:
-                assigned = replen
-            elif current_workers == 1:
-                assigned = other
-            else:
-                return [], False, False
+        if w == 0:
+            assigned = replen if replen else store_orders
+        elif w == 1:
+            assigned = other if other else replen
         else:
-            assigned = store_orders
+            return [], False, False
 
-    # ===== 🔥 FIX <400 =====
+    # ===== <400 =====
     else:
         assigned = list(store_orders)
 
         if total_qty <= SMALL_STORE_THRESHOLD:
             for s in sorted_stores:
-                if s != chosen:
-                    if (
-                        store_qty[s] <= SMALL_STORE_THRESHOLD
-                        and workers.get(s, 0) == 0
-                    ):
-                        assigned += stores[s]
-                        break
+                if s != chosen and store_qty[s] <= SMALL_STORE_THRESHOLD:
+                    assigned += stores[s]
+                    break
 
     if not assigned:
         return [], False, False
@@ -276,7 +250,7 @@ def assign_orders(user):
 
     r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
 
-    return assigned, BIG, False
+    return assigned, False, False
 
 # ===== CONFIRM =====
 def confirm_orders(user):
@@ -289,21 +263,18 @@ def confirm_orders(user):
     pipe = r.pipeline()
 
     for o in orders:
-        oid = o["order"]
         pipe.hincrby("store_workers", o["store"], 1)
-        pipe.persist(f"lock:{oid}")
-        pipe.sadd("assigned_orders", oid)
+        pipe.persist(f"lock:{o['order']}")
+        pipe.sadd("assigned_orders", o["order"])
 
     pipe.delete(f"pending:{user}")
     pipe.execute()
 
-    log_event = {
+    r.rpush("log_queue", json.dumps({
         "id": f"{user}_{time.time()}",
         "user": user,
         "orders": orders
-    }
-
-    r.rpush("log_queue", json.dumps(log_event))
+    }))
 
 # ===== HTML =====
 HTML = """
@@ -355,10 +326,8 @@ def index():
     if user:
         if action == "upload" and user == "admin" and file:
             upload_orders(file)
-
         elif action == "confirm":
             confirm_orders(user)
-
         else:
             orders, _, _ = assign_orders(user)
             if user and not orders:
