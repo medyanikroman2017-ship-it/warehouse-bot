@@ -8,6 +8,7 @@ from psycopg2.extras import execute_values
 from oauth2client.service_account import ServiceAccountCredentials
 
 app = Flask(__name__)
+print("🚀 NEW VERSION LOADED:", time.time())
 
 # ===== CONFIG =====
 PENDING_TTL = 120   # ← ИЗМЕНЕНО (2 минуты)
