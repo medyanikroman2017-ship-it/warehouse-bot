@@ -4,6 +4,7 @@ import redis
 import psycopg2
 import pandas as pd
 import gspread
+from psycopg2.extras import execute_values
 from oauth2client.service_account import ServiceAccountCredentials
 
 app = Flask(__name__)
@@ -19,21 +20,9 @@ DB_URL = os.environ.get("DATABASE_URL")
 
 # ===== PRIORITY =====
 PRIORITY_ORDER = [
-    "25",
-    "495",
-    "451",
-    "411",
-    "498",
-    "44",
-    "412",
-    "413",
-    "421",
-    "416",
-    "497",
-    "43",
-    "424",
-    "415",
-    "496"
+    "25","495","451","411","498","44",
+    "412","413","421","416","497","43",
+    "424","415","496"
 ]
 
 def get_store_priority(store):
@@ -106,32 +95,39 @@ def log_worker():
 
 threading.Thread(target=log_worker, daemon=True).start()
 
-# ===== UPLOAD =====
+# ===== UPLOAD (УЛУЧШЕННЫЙ) =====
 def upload_orders(file):
     df = pd.read_excel(file)
 
     conn = get_conn()
     cur = conn.cursor()
 
-    cur.execute("DELETE FROM orders")
+    # быстрее чем DELETE
+    cur.execute("TRUNCATE TABLE orders")
+
+    data = []
 
     for _, row in df.iterrows():
         try:
-            cur.execute(
-                """
-                INSERT INTO orders (order_id, store, qty, susr3, ref)
-                VALUES (%s, %s, %s, %s, %s)
-                """,
-                (
-                    str(row["ORDERKEY"]).zfill(10),
-                    str(row["CONSIGNEEKEY"]),
-                    int(row["TOTALQTY"]),
-                    str(row["SUSR3"] or ""),
-                    str(row["REFERENCENUM"] or "")
-                )
-            )
-        except Exception as e:
-            print("UPLOAD ERROR:", e)
+            data.append((
+                str(row["ORDERKEY"]).zfill(10),
+                str(row["CONSIGNEEKEY"]),
+                int(row["TOTALQTY"]),
+                str(row["SUSR3"] or ""),
+                str(row["REFERENCENUM"] or "")
+            ))
+        except:
+            pass
+
+    # 🚀 BULK INSERT
+    execute_values(
+        cur,
+        """
+        INSERT INTO orders (order_id, store, qty, susr3, ref)
+        VALUES %s
+        """,
+        data
+    )
 
     conn.commit()
     conn.close()
@@ -317,7 +313,7 @@ HTML = """
 
 <form method="post">
     <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">✅ Potwierdź odbiór</button>
+    <button name="action" value="confirm">✅ Potwierdź odbióр</button>
 </form>
 
 {% for o in orders %}
@@ -344,10 +340,8 @@ def index():
     if user:
         if action == "upload" and user == "admin" and file:
             upload_orders(file)
-
         elif action == "confirm":
             confirm_orders(user)
-
         else:
             orders, _, _ = assign_orders(user)
 
