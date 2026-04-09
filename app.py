@@ -17,6 +17,31 @@ SMALL_STORE_THRESHOLD = 400
 r = redis.from_url(os.environ.get("REDIS_URL"), decode_responses=True)
 DB_URL = os.environ.get("DATABASE_URL")
 
+# ===== PRIORITY =====
+PRIORITY_ORDER = [
+    "25",
+    "495",
+    "451",
+    "411",
+    "498",
+    "44",
+    "412",
+    "413",
+    "421",
+    "416",
+    "497",
+    "43",
+    "424",
+    "415",
+    "496"
+]
+
+def get_store_priority(store):
+    for i, prefix in enumerate(PRIORITY_ORDER):
+        if store.startswith(prefix):
+            return i
+    return 999
+
 # ===== DB =====
 def get_conn():
     return psycopg2.connect(DB_URL, sslmode="require")
@@ -32,7 +57,7 @@ def connect_sheet():
     client = gspread.authorize(creds)
     return client.open_by_key("1dtSO224vSpxaR5Jm3wNQ09SiMjSjLGkgL1C4lRfg7YM")
 
-# ===== LOG WORKER (НАДЕЖНЫЙ) =====
+# ===== LOG WORKER =====
 def log_worker():
     sheet = connect_sheet().worksheet("log")
 
@@ -46,7 +71,6 @@ def log_worker():
         if item:
             data = json.loads(item)
 
-            # защита от дублей
             if r.sismember("logged_ids", data.get("id")):
                 r.lrem("log_processing", 1, item)
                 continue
@@ -66,7 +90,6 @@ def log_worker():
             try:
                 sheet.append_rows(buffer)
 
-                # помечаем как записанные
                 for item in processing_items:
                     data = json.loads(item)
                     r.sadd("logged_ids", data.get("id"))
@@ -142,16 +165,6 @@ def split_replen_and_other(orders):
             other.append(o)
     return replen, other
 
-# ===== PRIORITY =====
-def get_priority(store):
-    if store.startswith("25"):
-        return 1
-    if store.startswith(("412", "413")):
-        return 2
-    if store.startswith(("41", "42")):
-        return 3
-    return 4
-
 # ===== LOCK =====
 LOCK_SCRIPT = r.register_script("""
 local user = ARGV[1]
@@ -207,21 +220,25 @@ def assign_orders(user):
 
     workers = get_store_workers()
 
-    valid = []
-    for s in sorted(stores, key=get_priority):
+    sorted_stores = sorted(
+        stores.keys(),
+        key=lambda x: (get_store_priority(x), int(x))
+    )
+
+    chosen = None
+
+    for s in sorted_stores:
         w = workers.get(s, 0)
         qty = store_qty[s]
 
         if (qty >= BIG_STORE_THRESHOLD and w < 2) or (
             qty < BIG_STORE_THRESHOLD and w == 0
         ):
-            valid.append(s)
+            chosen = s
+            break
 
-    if not valid:
+    if not chosen:
         return [], False, False
-
-    best_p = get_priority(valid[0])
-    chosen = random.choice([s for s in valid if get_priority(s) == best_p])
 
     store_orders = stores[chosen]
     total_qty = store_qty[chosen]
@@ -270,7 +287,6 @@ def confirm_orders(user):
     pipe.delete(f"pending:{user}")
     pipe.execute()
 
-    # УНИКАЛЬНЫЙ ID события
     log_event = {
         "id": f"{user}_{time.time()}",
         "user": user,
