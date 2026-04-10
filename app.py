@@ -11,8 +11,7 @@ app = Flask(__name__)
 print("🚀 NEW VERSION LOADED:", time.time())
 
 # ===== CONFIG =====
-PENDING_TTL = 120   # ← ИЗМЕНЕНО (2 минуты)
-LOCK_TTL = 120      # ← ИЗМЕНЕНО (2 минуты)
+PENDING_TTL = 120
 BIG_STORE_THRESHOLD = 1200
 SMALL_STORE_THRESHOLD = 400
 
@@ -95,7 +94,6 @@ def upload_orders(file):
     cur.execute("TRUNCATE TABLE orders")
 
     data = []
-
     for _, row in df.iterrows():
         try:
             data.append((
@@ -116,11 +114,21 @@ def upload_orders(file):
     conn.commit()
     conn.close()
 
-# ===== LOAD =====
+# ===== LOAD (с возвратом через 2 минуты) =====
 def load_orders():
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("SELECT order_id, store, qty, susr3, ref FROM orders")
+
+    cur.execute("""
+        SELECT order_id, store, qty, susr3, ref
+        FROM orders
+        WHERE assigned = FALSE
+        AND (
+            assigned_at IS NULL
+            OR assigned_at < NOW() - INTERVAL '2 minutes'
+        )
+    """)
+
     rows = cur.fetchall()
     conn.close()
 
@@ -145,32 +153,6 @@ def split_replen_and_other(orders):
             other.append(o)
     return replen, other
 
-# ===== LOCK =====
-LOCK_SCRIPT = r.register_script("""
-local user = ARGV[1]
-local ttl = tonumber(ARGV[2])
-
-for i,key in ipairs(KEYS) do
-    if redis.call("EXISTS", key) == 1 then
-        return 0
-    end
-end
-
-for i,key in ipairs(KEYS) do
-    redis.call("SET", key, user, "EX", ttl)
-    redis.call("SADD", "locked_orders", string.sub(key,6))
-end
-
-return 1
-""")
-
-def lock_orders(user, orders):
-    keys = [f"lock:{o['order']}" for o in orders]
-    return LOCK_SCRIPT(keys=keys, args=[user, LOCK_TTL]) == 1
-
-def get_store_workers():
-    return {k: int(v) for k, v in r.hgetall("store_workers").items()}
-
 # ===== ASSIGN =====
 def assign_orders(user):
     pending = r.get(f"pending:{user}")
@@ -179,58 +161,29 @@ def assign_orders(user):
 
     orders = load_orders()
 
-    locked = r.smembers("locked_orders")
-    assigned_global = r.smembers("assigned_orders")
-
-    available = [
-        o for o in orders
-        if o["order"] not in locked
-        and o["order"] not in assigned_global
-    ]
-
-    if not available:
+    if not orders:
         return [], False, False
 
     stores, store_qty = {}, {}
 
-    for o in available:
+    for o in orders:
         s = o["store"]
         stores.setdefault(s, []).append(o)
         store_qty[s] = store_qty.get(s, 0) + o["qty"]
-
-    workers = get_store_workers()
 
     sorted_stores = sorted(
         stores.keys(),
         key=lambda x: (get_store_priority(x), int(x))
     )
 
-    chosen = None
-    for s in sorted_stores:
-        w = workers.get(s, 0)
-        qty = store_qty[s]
-
-        if (qty >= BIG_STORE_THRESHOLD and w < 2) or (qty < BIG_STORE_THRESHOLD and w == 0):
-            chosen = s
-            break
-
-    if not chosen:
-        return [], False, False
+    chosen = sorted_stores[0]
 
     store_orders = stores[chosen]
     total_qty = store_qty[chosen]
 
     if total_qty >= BIG_STORE_THRESHOLD:
         replen, other = split_replen_and_other(store_orders)
-        w = workers.get(chosen, 0)
-
-        if w == 0:
-            assigned = replen if replen else store_orders
-        elif w == 1:
-            assigned = other if other else replen
-        else:
-            return [], False, False
-
+        assigned = replen if replen else store_orders
     else:
         assigned = list(store_orders)
 
@@ -243,8 +196,21 @@ def assign_orders(user):
     if not assigned:
         return [], False, False
 
-    if not lock_orders(user, assigned):
-        return [], False, False
+    # 🔥 ВРЕМЕННЫЙ РЕЗЕРВ (НЕ assigned!)
+    conn = get_conn()
+    cur = conn.cursor()
+
+    ids = [o["order"] for o in assigned]
+
+    cur.execute("""
+        UPDATE orders
+        SET assigned_to = %s,
+            assigned_at = NOW()
+        WHERE order_id = ANY(%s)
+    """, (user, ids))
+
+    conn.commit()
+    conn.close()
 
     r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
 
@@ -258,15 +224,22 @@ def confirm_orders(user):
 
     orders = json.loads(raw)
 
-    pipe = r.pipeline()
+    conn = get_conn()
+    cur = conn.cursor()
 
-    for o in orders:
-        pipe.hincrby("store_workers", o["store"], 1)
-        pipe.persist(f"lock:{o['order']}")
-        pipe.sadd("assigned_orders", o["order"])
+    ids = [o["order"] for o in orders]
 
-    pipe.delete(f"pending:{user}")
-    pipe.execute()
+    cur.execute("""
+        UPDATE orders
+        SET assigned = TRUE
+        WHERE order_id = ANY(%s)
+          AND assigned_to = %s
+    """, (ids, user))
+
+    conn.commit()
+    conn.close()
+
+    r.delete(f"pending:{user}")
 
     r.rpush("log_queue", json.dumps({
         "id": f"{user}_{time.time()}",
