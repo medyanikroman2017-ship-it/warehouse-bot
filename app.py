@@ -125,7 +125,7 @@ def load_orders():
         WHERE assigned = FALSE
         AND (
             assigned_at IS NULL
-            OR assigned_at < NOW() - INTERVAL '2 minutes'
+            OR assigned_at < NOW() - INTERVAL '5 minutes'
         )
     """)
 
