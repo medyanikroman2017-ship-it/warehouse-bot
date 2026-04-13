@@ -247,12 +247,81 @@ def confirm_orders(user):
         "orders": orders
     }))
 
-# ===== HTML =====
 HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body {
+    font-family: Arial;
+    padding: 10px;
+    background: #f5f5f5;
+}
+
+h2 {
+    font-size: 20px;
+}
+
+input {
+    width: 100%;
+    padding: 15px;
+    font-size: 18px;
+    margin-bottom: 10px;
+}
+
+button {
+    width: 100%;
+    padding: 15px;
+    font-size: 18px;
+    margin-bottom: 10px;
+}
+
+.order {
+    background: white;
+    padding: 10px;
+    margin-bottom: 8px;
+    border-radius: 8px;
+}
+
+/* 🔴 мигающее предупреждение */
+@keyframes blink {
+    0% { background: red; }
+    50% { background: darkred; }
+    100% { background: red; }
+}
+
+.alert {
+    color: white;
+    padding: 12px;
+    font-weight: bold;
+    text-align: center;
+    margin-bottom: 12px;
+    border-radius: 10px;
+    animation: blink 1s infinite;
+    font-size: 16px;
+}
+
+/* 🟢 успешное подтверждение */
+.success {
+    background: #28a745;
+    color: white;
+    padding: 12px;
+    font-weight: bold;
+    text-align: center;
+    margin-bottom: 12px;
+    border-radius: 10px;
+    font-size: 16px;
+}
+</style>
+</head>
+
+<body>
+
 <h2>📦 Dystrybucja zamówień</h2>
 
 <form method="post">
-    <input name="user" placeholder="Wpisz ID" required>
+    <input name="user" placeholder="Wpisz ID" required autofocus>
     <button name="action" value="get">Pobierz zamówienia</button>
 </form>
 
@@ -264,17 +333,31 @@ HTML = """
 </form>
 {% endif %}
 
+{% if success %}
+<div class="success">
+✅ Zamówienie zostało potwierdzone
+</div>
+{% endif %}
+
 {% if orders %}
+
+<div class="alert">
+⚠️ PAMIĘTAJ: MUSISZ POTWIERDZIĆ ZAMÓWIENIE!
+</div>
+
 <h3>👤 {{user}}</h3>
 
 <form method="post">
     <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">✅ Potwierdź odbióр</button>
+    <button name="action" value="confirm">✅ Potwierdź odbiór</button>
 </form>
 
 {% for o in orders %}
-<div>{{o.order}} | {{o.store}} | {{o.qty}} | {{o.susr3}}</div>
+<div class="order">
+{{o.order}} | {{o.store}} | {{o.qty}} | {{o.susr3}}
+</div>
 {% endfor %}
+
 {% endif %}
 
 {% if no_orders %}
@@ -282,6 +365,9 @@ HTML = """
     ❌ Brak dostępnych zamówień do pobrania
 </div>
 {% endif %}
+
+</body>
+</html>
 """
 
 # ===== ROUTE =====
