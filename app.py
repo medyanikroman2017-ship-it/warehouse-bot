@@ -11,7 +11,7 @@ app = Flask(__name__)
 print("🚀 NEW VERSION LOADED:", time.time())
 
 # ===== CONFIG =====
-PENDING_TTL = 120
+PENDING_TTL = 300
 BIG_STORE_THRESHOLD = 1200
 SMALL_STORE_THRESHOLD = 400
 
