@@ -114,11 +114,20 @@ def upload_orders(file):
     conn.commit()
     conn.close()
 
-# ===== LOAD (с возвратом через 2 минуты) =====
+# ===== LOAD (с возвратом через 5 минут) =====
 def load_orders():
     conn = get_conn()
     cur = conn.cursor()
 
+    # 🔥 ОЧИСТКА ЗАВИСШИХ STORE
+    cur.execute("""
+        DELETE FROM store_locks
+        WHERE locked_at < NOW() - INTERVAL '5 minutes'
+    """)
+
+    conn.commit()
+
+    # ===== ОСНОВНОЙ SELECT =====
     cur.execute("""
         SELECT order_id, store, qty, susr3, ref
         FROM orders
@@ -176,11 +185,42 @@ def assign_orders(user):
         key=lambda x: (get_store_priority(x), int(x))
     )
 
-    chosen = sorted_stores[0]
+    # ===== ВЫБОР STORE С БЛОКИРОВКОЙ =====
+    chosen = None
+
+    for s in sorted_stores:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        try:
+            cur.execute("""
+                INSERT INTO store_locks (store, user_id, locked_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (store) DO NOTHING
+                RETURNING store
+            """, (s, user))
+
+            locked = cur.fetchone()
+
+            conn.commit()
+            conn.close()
+
+            if locked:
+                chosen = s
+                break
+
+        except:
+            conn.rollback()
+            conn.close()
+            continue
+
+    if not chosen:
+        return [], False, False
 
     store_orders = stores[chosen]
     total_qty = store_qty[chosen]
 
+    # ===== ЛОГИКА РАСПРЕДЕЛЕНИЯ =====
     if total_qty >= BIG_STORE_THRESHOLD:
         replen, other = split_replen_and_other(store_orders)
         assigned = replen if replen else store_orders
@@ -196,7 +236,7 @@ def assign_orders(user):
     if not assigned:
         return [], False, False
 
-    # 🔥 ВРЕМЕННЫЙ РЕЗЕРВ (НЕ assigned!)
+    # ===== ВРЕМЕННЫЙ РЕЗЕРВ =====
     conn = get_conn()
     cur = conn.cursor()
 
@@ -207,11 +247,34 @@ def assign_orders(user):
         SET assigned_to = %s,
             assigned_at = NOW()
         WHERE order_id = ANY(%s)
+          AND (
+              assigned_to IS NULL
+              OR assigned_at < NOW() - INTERVAL '5 minutes'
+          )
+        RETURNING order_id
     """, (user, ids))
+
+    updated = cur.fetchall()
 
     conn.commit()
     conn.close()
 
+    if len(updated) != len(ids):
+        # 🔥 освобождаем store
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute("""
+            DELETE FROM store_locks
+            WHERE store = %s
+        """, (chosen,))
+
+        conn.commit()
+        conn.close()
+
+        return [], False, False
+
+    # ✅ сохраняем pending
     r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
 
     return assigned, False, False
@@ -229,12 +292,22 @@ def confirm_orders(user):
 
     ids = [o["order"] for o in orders]
 
+    # подтверждаем заказы
     cur.execute("""
         UPDATE orders
         SET assigned = TRUE
         WHERE order_id = ANY(%s)
           AND assigned_to = %s
     """, (ids, user))
+
+    # 🔥 ОСВОБОЖДАЕМ STORE (ВАЖНО)
+    stores = list(set(o["store"] for o in orders))
+
+    for s in stores:
+        cur.execute("""
+            DELETE FROM store_locks
+            WHERE store = %s
+        """, (s,))
 
     conn.commit()
     conn.close()
