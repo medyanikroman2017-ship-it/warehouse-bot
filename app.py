@@ -11,7 +11,7 @@ app = Flask(__name__)
 print("🚀 NEW VERSION LOADED:", time.time())
 
 # ===== CONFIG =====
-PENDING_TTL = 300
+PENDING_TTL = 1200
 BIG_STORE_THRESHOLD = 1200
 SMALL_STORE_THRESHOLD = 400
 
@@ -114,7 +114,7 @@ def upload_orders(file):
     conn.commit()
     conn.close()
 
-# ===== LOAD (с возвратом через 5 минут) =====
+# ===== LOAD (с возвратом через 20 минут) =====
 def load_orders():
     conn = get_conn()
     cur = conn.cursor()
@@ -122,7 +122,7 @@ def load_orders():
     # 🔥 ОЧИСТКА ЗАВИСШИХ STORE
     cur.execute("""
         DELETE FROM store_locks
-        WHERE locked_at < NOW() - INTERVAL '5 minutes'
+        WHERE locked_at < NOW() - INTERVAL '20 minutes'
     """)
 
     conn.commit()
@@ -134,7 +134,7 @@ def load_orders():
         WHERE assigned = FALSE
         AND (
             assigned_at IS NULL
-            OR assigned_at < NOW() - INTERVAL '5 minutes'
+            OR assigned_at < NOW() - INTERVAL '20 minutes'
         )
     """)
 
@@ -168,6 +168,34 @@ def assign_orders(user):
     if pending:
         return json.loads(pending), False, False
 
+    # ===== 🔥 FALLBACK ИЗ БД =====
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT order_id, store, qty, susr3, ref
+        FROM orders
+        WHERE assigned = FALSE
+          AND assigned_to = %s
+          AND assigned_at > NOW() - INTERVAL '20 minutes'
+    """, (user,))
+
+    rows = cur.fetchall()
+    conn.close()
+
+    if rows:
+        return [
+            {
+                "order": r[0],
+                "store": r[1],
+                "qty": r[2],
+                "susr3": r[3] or "",
+                "ref": r[4] or "",
+            }
+            for r in rows
+        ], False, False
+
+    # ===== ТОЛЬКО ЕСЛИ НЕТ СВОИХ ЗАКАЗОВ =====
     orders = load_orders()
 
     if not orders:
@@ -249,7 +277,7 @@ def assign_orders(user):
         WHERE order_id = ANY(%s)
           AND (
               assigned_to IS NULL
-              OR assigned_at < NOW() - INTERVAL '5 minutes'
+              OR assigned_at < NOW() - INTERVAL '20 minutes'
           )
         RETURNING order_id
     """, (user, ids))
@@ -375,6 +403,22 @@ button {
     font-size: 16px;
 }
 
+/* 📳 тряска */
+@keyframes shake {
+  0% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-6px); }
+  80% { transform: translateX(6px); }
+  100% { transform: translateX(0); }
+}
+
+/* усиленный alert */
+.alert.active {
+    animation: blink 1s infinite, shake 0.4s infinite;
+    background: #ff0000;
+}
+
 /* 🟢 успешное подтверждение */
 .success {
     background: #28a745;
@@ -438,6 +482,44 @@ button {
     ❌ Brak dostępnych zamówień do pobrania
 </div>
 {% endif %}
+
+<script>
+let WARNING_TIME = 2 * 60 * 1000; // 2 минуты
+let triggered = false;
+let startTime = Date.now();
+
+setInterval(() => {
+    if (triggered) return;
+
+    let now = Date.now();
+
+    if (now - startTime > WARNING_TIME) {
+        triggered = true;
+        triggerWarning();
+    }
+}, 1000);
+
+// 🔴 усиление
+function triggerWarning() {
+    let alertBox = document.querySelector('.alert');
+
+    if (alertBox) {
+        alertBox.classList.add('active');
+        alertBox.innerText = "⚠️ PAMIĘTAJ: MUSISZ POTWIERDZIĆ ZAMÓWIENIE!";
+    }
+
+    startVibration();
+}
+
+// 📳 вибрация
+function startVibration() {
+    if ("vibrate" in navigator) {
+        setInterval(() => {
+            navigator.vibrate([300, 200, 300, 200, 500]);
+        }, 5000);
+    }
+}
+</script>
 
 </body>
 </html>
