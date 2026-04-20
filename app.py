@@ -484,20 +484,50 @@ button {
 {% endif %}
 
 <script>
-let WARNING_TIME = 2 * 60 * 1000; // 2 минуты
+let hasOrders = {{ 'true' if orders else 'false' }};
+let confirmed = {{ 'true' if success else 'false' }};
+
+let WARNING_TIME = 2 * 60 * 1000;
 let triggered = false;
-let startTime = Date.now();
+let vibrationInterval = null;
 
-setInterval(() => {
-    if (triggered) return;
+// 🚫 если нет заказов или уже подтвердил → ничего не делаем
+if (!hasOrders || confirmed) {
+    console.log("NO WARNING");
+} else {
 
-    let now = Date.now();
+    let startTime = Date.now();
 
-    if (now - startTime > WARNING_TIME) {
-        triggered = true;
-        triggerWarning();
+    let timer = setInterval(() => {
+        if (triggered) return;
+
+        let now = Date.now();
+
+        if (now - startTime > WARNING_TIME) {
+            triggered = true;
+            triggerWarning();
+        }
+    }, 1000);
+
+    function triggerWarning() {
+        let alertBox = document.querySelector('.alert');
+
+        if (alertBox) {
+            alertBox.classList.add('active');
+        }
+
+        startVibration();
     }
-}, 1000);
+
+    function startVibration() {
+        if ("vibrate" in navigator) {
+            vibrationInterval = setInterval(() => {
+                navigator.vibrate([300, 200, 300, 200, 500]);
+            }, 5000);
+        }
+    }
+}
+</script>
 
 // 🔴 усиление
 function triggerWarning() {
@@ -534,16 +564,17 @@ def index():
 
     orders = []
     no_orders = False
+    success = False   # 👈 ВОТ ЭТА СТРОКА
 
-    if user:
-        if action == "upload" and user == "admin" and file:
-            upload_orders(file)
-        elif action == "confirm":
-            confirm_orders(user)
-        else:
-            orders, _, _ = assign_orders(user)
-            if user and not orders:
-                no_orders = True
+if user:
+    if action == "upload" and user == "admin" and file:
+        upload_orders(file)
+    elif action == "confirm":
+        confirm_orders(user)
+        success = True
+        orders = []
+    else:
+        orders, _, _ = assign_orders(user)
 
     return render_template_string(
         HTML,
