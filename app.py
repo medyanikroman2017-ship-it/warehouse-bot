@@ -466,7 +466,7 @@ button {
 
 <form method="post">
     <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">✅ Potwierdź odbiór</button>
+    <button name="action" value="confirm">✅ Potwierdź odbióр</button>
 </form>
 
 {% for o in orders %}
@@ -489,7 +489,6 @@ let confirmed = {{ 'true' if success else 'false' }};
 
 let WARNING_TIME = 2 * 60 * 1000;
 let triggered = false;
-let vibrationInterval = null;
 
 // 🚫 если нет заказов или уже подтвердил → ничего не делаем
 if (!hasOrders || confirmed) {
@@ -521,32 +520,10 @@ if (!hasOrders || confirmed) {
 
     function startVibration() {
         if ("vibrate" in navigator) {
-            vibrationInterval = setInterval(() => {
+            setInterval(() => {
                 navigator.vibrate([300, 200, 300, 200, 500]);
             }, 5000);
         }
-    }
-}
-</script>
-
-// 🔴 усиление
-function triggerWarning() {
-    let alertBox = document.querySelector('.alert');
-
-    if (alertBox) {
-        alertBox.classList.add('active');
-        alertBox.innerText = "⚠️ PAMIĘTAJ: MUSISZ POTWIERDZIĆ ZAMÓWIENIE!";
-    }
-
-    startVibration();
-}
-
-// 📳 вибрация
-function startVibration() {
-    if ("vibrate" in navigator) {
-        setInterval(() => {
-            navigator.vibrate([300, 200, 300, 200, 500]);
-        }, 5000);
     }
 }
 </script>
@@ -564,23 +541,28 @@ def index():
 
     orders = []
     no_orders = False
-    success = False   # 👈 ВОТ ЭТА СТРОКА
+    success = False
 
-if user:
-    if action == "upload" and user == "admin" and file:
-        upload_orders(file)
-    elif action == "confirm":
-        confirm_orders(user)
-        success = True
-        orders = []
-    else:
-        orders, _, _ = assign_orders(user)
+    if user:
+        if action == "upload" and user == "admin" and file:
+            upload_orders(file)
+
+        elif action == "confirm":
+            confirm_orders(user)
+            success = True
+            orders = []
+
+        else:
+            orders, _, _ = assign_orders(user)
+            if user and not orders:
+                no_orders = True
 
     return render_template_string(
         HTML,
         orders=orders,
         user=user,
-        no_orders=no_orders
+        no_orders=no_orders,
+        success=success
     )
 
 app.run(host="0.0.0.0", port=5000)
