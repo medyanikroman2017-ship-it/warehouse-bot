@@ -12,7 +12,7 @@ print("🚀 NEW VERSION LOADED:", time.time())
 
 # ===== CONFIG =====
 PENDING_TTL = 1200
-BIG_STORE_THRESHOLD = 1200
+BIG_STORE_THRESHOLD = 1500
 SMALL_STORE_THRESHOLD = 600
 
 r = redis.from_url(os.environ.get("REDIS_URL"), decode_responses=True)
