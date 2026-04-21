@@ -12,8 +12,6 @@ print("🚀 NEW VERSION LOADED:", time.time())
 
 # ===== CONFIG =====
 PENDING_TTL = 1200
-BIG_STORE_THRESHOLD = 1500
-SMALL_STORE_THRESHOLD = 600
 
 r = redis.from_url(os.environ.get("REDIS_URL"), decode_responses=True)
 DB_URL = os.environ.get("DATABASE_URL")
@@ -100,6 +98,7 @@ def upload_orders(file):
                 str(row["ORDERKEY"]).zfill(10),
                 str(row["CONSIGNEEKEY"]),
                 int(row["TOTALQTY"]),
+                int(row["TOTALORDERLINES"]),  # ← ДОБАВИЛИ
                 str(row["SUSR3"] or ""),
                 str(row["REFERENCENUM"] or "")
             ))
@@ -107,7 +106,7 @@ def upload_orders(file):
             pass
 
     execute_values(cur,
-        "INSERT INTO orders (order_id, store, qty, susr3, ref) VALUES %s",
+        "INSERT INTO orders (order_id, store, qty, total_lines, susr3, ref) VALUES %s",
         data
     )
 
@@ -129,7 +128,7 @@ def load_orders():
 
     # ===== ОСНОВНОЙ SELECT =====
     cur.execute("""
-        SELECT order_id, store, qty, susr3, ref
+        SELECT order_id, store, qty, total_lines, susr3, ref
         FROM orders
         WHERE assigned = FALSE
         AND (
@@ -146,8 +145,9 @@ def load_orders():
             "order": r[0],
             "store": r[1],
             "qty": r[2],
-            "susr3": r[3] or "",
-            "ref": r[4] or "",
+            "lines": r[3],   # ← НОВОЕ
+            "susr3": r[4] or "",
+            "ref": r[5] or "",
         }
         for r in rows
     ]
@@ -168,12 +168,12 @@ def assign_orders(user):
     if pending:
         return json.loads(pending), False, False
 
-    # ===== 🔥 FALLBACK ИЗ БД =====
+    # ===== FALLBACK ИЗ БД =====
     conn = get_conn()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT order_id, store, qty, susr3, ref
+        SELECT order_id, store, qty, total_lines, susr3, ref
         FROM orders
         WHERE assigned = FALSE
           AND assigned_to = %s
@@ -189,82 +189,117 @@ def assign_orders(user):
                 "order": r[0],
                 "store": r[1],
                 "qty": r[2],
-                "susr3": r[3] or "",
-                "ref": r[4] or "",
+                "lines": r[3],
+                "susr3": r[4] or "",
+                "ref": r[5] or "",
             }
             for r in rows
         ], False, False
 
-    # ===== ТОЛЬКО ЕСЛИ НЕТ СВОИХ ЗАКАЗОВ =====
+    # ===== НОВАЯ ВЫДАЧА =====
     orders = load_orders()
 
     if not orders:
         return [], False, False
 
-    stores, store_qty = {}, {}
+    # ===== ГРУППИРОВКА =====
+    stores, store_lines = {}, {}
 
     for o in orders:
         s = o["store"]
         stores.setdefault(s, []).append(o)
-        store_qty[s] = store_qty.get(s, 0) + o["qty"]
+        store_lines[s] = store_lines.get(s, 0) + o.get("lines", 0)
 
-    sorted_stores = sorted(
-        stores.keys(),
-        key=lambda x: (get_store_priority(x), int(x))
-    )
+    # ===== КЛАССИФИКАЦИЯ =====
+    small, standard, large = [], [], []
 
-    # ===== ВЫБОР STORE С БЛОКИРОВКОЙ =====
-    chosen = None
+    for s, lines in store_lines.items():
+        if lines >= 1200:
+            large.append(s)
+        elif lines >= 200:
+            standard.append(s)
+        else:
+            small.append(s)
 
-    for s in sorted_stores:
+    def sort_key(s):
+        return (get_store_priority(s), -store_lines[s])
+
+    large.sort(key=sort_key)
+    standard.sort(key=sort_key)
+    small.sort(key=sort_key)
+
+    assigned = []
+    used = set()
+    current_load = 0
+
+    TARGET = 400
+    TOLERANCE = 40
+
+    # ===== ФУНКЦИЯ LOCK =====
+    def try_lock(store):
         conn = get_conn()
         cur = conn.cursor()
-
         try:
             cur.execute("""
                 INSERT INTO store_locks (store, user_id, locked_at)
                 VALUES (%s, %s, NOW())
                 ON CONFLICT (store) DO NOTHING
                 RETURNING store
-            """, (s, user))
-
+            """, (store, user))
             locked = cur.fetchone()
-
             conn.commit()
             conn.close()
-
-            if locked:
-                chosen = s
-                break
-
+            return locked is not None
         except:
             conn.rollback()
             conn.close()
-            continue
+            return False
 
-    if not chosen:
-        return [], False, False
+    # ===== 1. LARGE (split логика) =====
+    for s in large:
+        if try_lock(s):
+            replen, other = split_replen_and_other(stores[s])
+            assigned = replen if replen else other
+            used.add(s)
+            break
 
-    store_orders = stores[chosen]
-    total_qty = store_qty[chosen]
+    # ===== 2. STANDARD (основа) =====
+    if not assigned:
+        for s in standard:
+            if try_lock(s):
+                assigned += stores[s]
+                current_load += store_lines[s]
+                used.add(s)
+                break
 
-    # ===== ЛОГИКА РАСПРЕДЕЛЕНИЯ =====
-    if total_qty >= BIG_STORE_THRESHOLD:
-        replen, other = split_replen_and_other(store_orders)
-        assigned = replen if replen else store_orders
-    else:
-        assigned = list(store_orders)
+    # ===== 3. ДОБОР SMALL (только если есть стандарт) =====
+    if current_load > 0:
+        for s in small:
+            if s in used:
+                continue
+            if current_load >= TARGET - TOLERANCE:
+                break
+            if try_lock(s):
+                assigned += stores[s]
+                current_load += store_lines[s]
+                used.add(s)
 
-        if total_qty <= SMALL_STORE_THRESHOLD:
-            for s in sorted_stores:
-                if s != chosen and store_qty[s] <= SMALL_STORE_THRESHOLD:
-                    assigned += stores[s]
+    # ===== 4. FALLBACK (если нет стандартов вообще) =====
+    if not assigned and not standard and not large:
+        for s in small:
+            if try_lock(s):
+                assigned += stores[s]
+                current_load += store_lines[s]
+                used.add(s)
+
+                if current_load >= TARGET - TOLERANCE:
                     break
 
+    # ===== ПРОВЕРКА =====
     if not assigned:
         return [], False, False
 
-    # ===== ВРЕМЕННЫЙ РЕЗЕРВ =====
+    # ===== РЕЗЕРВ В БД =====
     conn = get_conn()
     cur = conn.cursor()
 
@@ -283,29 +318,24 @@ def assign_orders(user):
     """, (user, ids))
 
     updated = cur.fetchall()
-
     conn.commit()
     conn.close()
 
     if len(updated) != len(ids):
-        # 🔥 освобождаем store
+        # rollback locks
         conn = get_conn()
         cur = conn.cursor()
-
-        cur.execute("""
-            DELETE FROM store_locks
-            WHERE store = %s
-        """, (chosen,))
-
+        for s in used:
+            cur.execute("DELETE FROM store_locks WHERE store = %s", (s,))
         conn.commit()
         conn.close()
-
         return [], False, False
 
-    # ✅ сохраняем pending
+    # ===== REDIS =====
     r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
 
     return assigned, False, False
+
 
 # ===== CONFIRM =====
 def confirm_orders(user):
