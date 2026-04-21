@@ -98,7 +98,7 @@ def upload_orders(file):
                 str(row["ORDERKEY"]).zfill(10),
                 str(row["CONSIGNEEKEY"]),
                 int(row["TOTALQTY"]),
-                int(row["TOTALORDERLINES"]),  # ← ДОБАВИЛИ
+                int(row["TOTALORDERLINES"]) if pd.notna(row["TOTALORDERLINES"]) else 0,  # ← ДОБАВИЛИ
                 str(row["SUSR3"] or ""),
                 str(row["REFERENCENUM"] or "")
             ))
@@ -208,7 +208,7 @@ def assign_orders(user):
     for o in orders:
         s = o["store"]
         stores.setdefault(s, []).append(o)
-        store_lines[s] = store_lines.get(s, 0) + o.get("lines", 0)
+        store_lines[s] = store_lines.get(s, 0) + (o.get("lines") or 0)
 
     # ===== КЛАССИФИКАЦИЯ =====
     small, standard, large = [], [], []
