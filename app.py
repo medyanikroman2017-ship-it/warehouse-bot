@@ -380,28 +380,27 @@ def confirm_orders(user):
         "orders": orders
     }))
     
-# 🔥 ВОТ СЮДА ВСТАВЛЯЕШЬ 👇
-
+# ===== DASHBOARD DATA =====
 @app.route("/dashboard_data")
 def dashboard_data():
     conn = get_conn()
     cur = conn.cursor()
 
+    # активные (в работе)
     cur.execute("""
         SELECT assigned_to, store, total_lines
         FROM orders
         WHERE assigned = FALSE
           AND assigned_to IS NOT NULL
     """)
-
     rows = cur.fetchall()
 
+    # общий остаток
     cur.execute("""
-        SELECT COUNT(*), COALESCE(SUM(total_lines),0)
+        SELECT COUNT(*), COALESCE(SUM(total_lines), 0)
         FROM orders
         WHERE assigned = FALSE
     """)
-
     total_orders, total_lines = cur.fetchone()
 
     conn.close()
@@ -427,9 +426,95 @@ def dashboard_data():
 
     return {
         "workers": workers,
-        "total_orders": total_orders,
+        "total_orders": int(total_orders or 0),
         "total_lines": int(total_lines or 0)
     }
+
+
+# ===== DASHBOARD UI =====
+@app.route("/dashboard")
+def dashboard():
+    return """
+    <html>
+    <head>
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body {
+                font-family: Arial;
+                background:#f5f5f5;
+                padding:10px;
+            }
+
+            .card {
+                background:white;
+                padding:12px;
+                margin-bottom:10px;
+                border-radius:10px;
+                box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            }
+
+            .big {
+                font-size:20px;
+                font-weight:bold;
+            }
+
+            .red { background:#ffcccc; }
+            .yellow { background:#fff3cd; }
+            .green { background:#d4edda; }
+
+            h2 {
+                margin-bottom:10px;
+            }
+        </style>
+    </head>
+    <body>
+
+    <h2>📊 Warehouse Dashboard</h2>
+
+    <div id="summary" class="card"></div>
+    <div id="workers"></div>
+
+    <script>
+    function getColor(lines){
+        if (lines > 450) return "red";
+        if (lines >= 300) return "yellow";
+        return "green";
+    }
+
+    async function load() {
+        let res = await fetch('/dashboard_data');
+        let data = await res.json();
+
+        // summary
+        document.getElementById('summary').innerHTML =
+            "<div class='big'>Remaining lines: " + data.total_lines + "</div>" +
+            "<div>Remaining orders: " + data.total_orders + "</div>";
+
+        // workers
+        let html = "";
+
+        for (let w in data.workers) {
+            let u = data.workers[w];
+            let color = getColor(u.lines);
+
+            html += "<div class='card " + color + "'>" +
+                "<b>👤 " + w + "</b><br>" +
+                "Lines: " + u.lines + "<br>" +
+                "Orders: " + u.orders + "<br>" +
+                "Stores: " + u.stores.join(", ") +
+                "</div>";
+        }
+
+        document.getElementById('workers').innerHTML = html;
+    }
+
+    load();
+    setInterval(load, 5000);
+    </script>
+
+    </body>
+    </html>
+    """
     
 HTML = """
 <!DOCTYPE html>
