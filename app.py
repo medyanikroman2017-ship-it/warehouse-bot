@@ -210,23 +210,12 @@ def assign_orders(user):
         stores.setdefault(s, []).append(o)
         store_lines[s] = store_lines.get(s, 0) + (o.get("lines") or 0)
 
-    # ===== КЛАССИФИКАЦИЯ =====
-    small, standard, large = [], [], []
+    # ===== ГРУППИРОВКА ПО ПРИОРИТЕТУ =====
+    priority_map = {}
 
-    for s, lines in store_lines.items():
-        if lines >= 1200:
-            large.append(s)
-        elif lines >= 200:
-            standard.append(s)
-        else:
-            small.append(s)
-
-    def sort_key(s):
-        return (get_store_priority(s), -store_lines[s])
-
-    large.sort(key=sort_key)
-    standard.sort(key=sort_key)
-    small.sort(key=sort_key)
+    for s in stores:
+        p = next((x for x in PRIORITY_ORDER if s.startswith(x)), "OTHER")
+        priority_map.setdefault(p, []).append(s)
 
     assigned = []
     used = set()
@@ -235,7 +224,7 @@ def assign_orders(user):
     TARGET = 400
     TOLERANCE = 40
 
-    # ===== ФУНКЦИЯ LOCK =====
+    # ===== LOCK =====
     def try_lock(store):
         conn = get_conn()
         cur = conn.cursor()
@@ -255,47 +244,69 @@ def assign_orders(user):
             conn.close()
             return False
 
+    # ===== СТРОГИЙ ПРОХОД ПО ПРИОРИТЕТАМ =====
+    for priority in PRIORITY_ORDER:
 
-    # ===== 1. STANDARD (основа) =====
-    if not assigned:
-        for s in standard:
-            if try_lock(s):
-                assigned += stores[s]
-                current_load += store_lines[s]
-                used.add(s)
-                break
+        group = priority_map.get(priority, [])
+        if not group:
+            continue
 
-    # ===== 2. ДОБОР SMALL (только если есть стандарт) =====
-    if current_load > 0:
-        for s in small:
-            if s in used:
-                continue
-            if current_load >= TARGET - TOLERANCE:
-                break
-            if try_lock(s):
-                assigned += stores[s]
-                current_load += store_lines[s]
-                used.add(s)
+        # --- классификация внутри приоритета ---
+        group_small = []
+        group_standard = []
+        group_large = []
 
-    # ===== 3. FALLBACK (если нет стандартов вообще) =====
-    if not assigned and not standard and not large:
-        for s in small:
-            if try_lock(s):
-                assigned += stores[s]
-                current_load += store_lines[s]
-                used.add(s)
+        for s in group:
+            lines = store_lines[s]
 
-                if current_load >= TARGET - TOLERANCE:
-                    break
+            if lines >= 1200:
+                group_large.append(s)
+            elif lines >= 200:
+                group_standard.append(s)
+            else:
+                group_small.append(s)
 
-    # ===== 4. LARGE (только если больше ничего нет) =====
-    if not assigned:
-        for s in large:
+        # --- сортировка (ВАЖНО) ---
+        group_large.sort(key=lambda s: -store_lines[s])
+        group_standard.sort(key=lambda s: -store_lines[s])
+        group_small.sort(key=lambda s: -store_lines[s])
+
+        # ===== 1. LARGE =====
+        for s in group_large:
             if try_lock(s):
                 replen, other = split_replen_and_other(stores[s])
                 assigned = replen if replen else other
                 used.add(s)
+                current_load = store_lines[s]
                 break
+
+        if current_load >= TARGET - TOLERANCE:
+            break
+
+        # ===== 2. STANDARD =====
+        for s in group_standard:
+            if try_lock(s):
+                assigned += stores[s]
+                current_load += store_lines[s]
+                used.add(s)
+                break
+
+        # ===== 3. ДОБОР SMALL =====
+        for s in group_small:
+            if s in used:
+                continue
+
+            if current_load >= TARGET - TOLERANCE:
+                break
+
+            if try_lock(s):
+                assigned += stores[s]
+                current_load += store_lines[s]
+                used.add(s)
+
+        # ===== ВАЖНО: РЕШАЕМ ВЫХОДИТЬ ИЛИ НЕТ =====
+        if current_load >= TARGET - TOLERANCE:
+            break
 
     # ===== ПРОВЕРКА =====
     if not assigned:
