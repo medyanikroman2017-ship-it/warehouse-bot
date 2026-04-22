@@ -386,7 +386,6 @@ def dashboard_data():
     conn = get_conn()
     cur = conn.cursor()
 
-    # активные заказы (в работе)
     cur.execute("""
         SELECT assigned_to, store, total_lines, assigned_at
         FROM orders
@@ -395,7 +394,6 @@ def dashboard_data():
     """)
     rows = cur.fetchall()
 
-    # общий остаток
     cur.execute("""
         SELECT COUNT(*), COALESCE(SUM(total_lines), 0)
         FROM orders
@@ -423,12 +421,10 @@ def dashboard_data():
         workers[worker]["orders"] += 1
         workers[worker]["stores"].add(store)
 
-        # берем самый старый заказ (для таймера)
         if assigned_at and workers[worker]["oldest"]:
             if assigned_at < workers[worker]["oldest"]:
                 workers[worker]["oldest"] = assigned_at
 
-        # если есть assigned → значит pending
         workers[worker]["pending"] = True
 
     for w in workers:
@@ -441,6 +437,30 @@ def dashboard_data():
     }
 
 
+# ===== RESET SYSTEM =====
+@app.route("/reset", methods=["POST"])
+def reset_system():
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+
+        cur.execute("TRUNCATE TABLE orders")
+        cur.execute("TRUNCATE TABLE store_locks")
+
+        conn.commit()
+        conn.close()
+
+        # очистка Redis pending
+        for key in r.keys("pending:*"):
+            r.delete(key)
+
+        return {"status": "ok"}
+
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ===== DASHBOARD UI =====
 @app.route("/dashboard")
 def dashboard():
     return """
@@ -466,11 +486,23 @@ def dashboard():
             .pending {
                 border: 3px solid red;
             }
+
+            button {
+                margin-bottom:10px;
+                padding:10px;
+                font-size:16px;
+                background:#ff4444;
+                color:white;
+                border:none;
+                border-radius:6px;
+            }
         </style>
     </head>
     <body>
 
     <h2>📊 Dashboard</h2>
+
+    <button onclick="resetSystem()">🔄 RESET SYSTEM</button>
 
     <div id="summary" class="card"></div>
     <div id="workers"></div>
@@ -488,6 +520,21 @@ def dashboard():
         return d.toLocaleTimeString();
     }
 
+    async function resetSystem() {
+        if (!confirm("⚠️ Ты уверен что хочешь удалить ВСЕ заказы?")) return;
+
+        let res = await fetch('/reset', { method: 'POST' });
+        let data = await res.json();
+
+        if (data.status === "ok") {
+            alert("✅ Система очищена");
+        } else {
+            alert("❌ Ошибка: " + data.message);
+        }
+
+        load();
+    }
+
     async function load() {
         let res = await fetch('/dashboard_data');
         let data = await res.json();
@@ -501,7 +548,6 @@ def dashboard():
         for (let w in data.workers) {
             let u = data.workers[w];
             let color = getColor(u.lines);
-
             let pendingClass = u.pending ? "pending" : "";
 
             html += "<div class='card " + color + " " + pendingClass + "'>" +
