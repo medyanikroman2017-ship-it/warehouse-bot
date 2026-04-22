@@ -144,22 +144,23 @@ def split_replen_and_other(orders):
             other.append(o)
     return replen, other
 
-# ===== ASSIGN =====
 def assign_orders(user):
     pending = r.get(f"pending:{user}")
     if pending:
         return json.loads(pending), False, False
 
-    # ===== FALLBACK FROM DB =====
+    # ===== FALLBACK =====
     conn = get_conn()
     cur = conn.cursor()
+
     cur.execute("""
         SELECT order_id, store, qty, total_lines, susr3, ref
         FROM orders
         WHERE assigned = FALSE
-        AND assigned_to = %s
-        AND assigned_at > NOW() - INTERVAL '20 minutes'
+          AND assigned_to = %s
+          AND assigned_at > NOW() - INTERVAL '20 minutes'
     """, (user,))
+
     rows = cur.fetchall()
     conn.close()
 
@@ -176,42 +177,33 @@ def assign_orders(user):
             for r in rows
         ], False, False
 
-    # ===== NEW ASSIGNMENT =====
+    # ===== LOAD =====
     orders = load_orders()
     if not orders:
         return [], False, False
 
-    # ===== GROUPING =====
+    # ===== GROUP =====
     stores, store_lines = {}, {}
+
     for o in orders:
         s = o["store"]
         stores.setdefault(s, []).append(o)
         store_lines[s] = store_lines.get(s, 0) + (o.get("lines") or 0)
 
-    # ===== CLASSIFICATION =====
-    small, standard, large = [], [], []
-    for s, lines in store_lines.items():
-        if lines >= 1200:
-            large.append(s)
-        elif lines >= 200:
-            standard.append(s)
-        else:
-            small.append(s)
-
-    def sort_key(s):
-        return (get_store_priority(s), -store_lines[s])
-
-    large.sort(key=sort_key)
-    standard.sort(key=sort_key)
-    small.sort(key=sort_key)
+    # ===== PRIORITY MAP =====
+    priority_map = {}
+    for s in stores:
+        p = next((x for x in PRIORITY_ORDER if s.startswith(x)), "OTHER")
+        priority_map.setdefault(p, []).append(s)
 
     assigned = []
     used = set()
     current_load = 0
+
     TARGET = 400
     TOLERANCE = 40
 
-    # ===== LOCK FUNCTION =====
+    # ===== LOCK =====
     def try_lock(store):
         conn = get_conn()
         cur = conn.cursor()
@@ -231,64 +223,122 @@ def assign_orders(user):
             conn.close()
             return False
 
-    # ===== 1. STANDARD =====
-    if not assigned:
-        for s in standard:
-            if try_lock(s):
-                assigned += stores[s]
-                current_load += store_lines[s]
-                used.add(s)
-                break
+    # ===== MAIN LOOP =====
+    for priority in PRIORITY_ORDER:
 
-    # ===== 2. TOP UP WITH SMALL =====
-    if current_load > 0:
-        for s in small:
-            if s in used:
-                continue
-            if current_load >= TARGET - TOLERANCE:
-                break
-            if try_lock(s):
-                assigned += stores[s]
-                current_load += store_lines[s]
-                used.add(s)
+        group = priority_map.get(priority, [])
+        if not group:
+            continue
 
-    # ===== 3. FALLBACK (no standards at all) =====
-    if not assigned and not standard and not large:
-        for s in small:
-            if try_lock(s):
-                assigned += stores[s]
-                current_load += store_lines[s]
-                used.add(s)
-                if current_load >= TARGET - TOLERANCE:
-                    break
+        # --- classify ---
+        small, standard, large = [], [], []
 
-    # ===== 4. LARGE (last resort) =====
-    if not assigned:
+        for s in group:
+            lines = store_lines[s]
+
+            if lines >= 1200:
+                large.append(s)
+            elif lines >= 200:
+                standard.append(s)
+            else:
+                small.append(s)
+
+        # --- sort ---
+        standard.sort(key=lambda s: -store_lines[s])
+        small.sort(key=lambda s: -store_lines[s])
+        large.sort(key=lambda s: -store_lines[s])
+
+        # =========================
+        # 1. LARGE (разделяем правильно)
+        # =========================
         for s in large:
             if try_lock(s):
                 replen, other = split_replen_and_other(stores[s])
-                assigned = replen if replen else other
+
+                if replen:
+                    assigned += replen
+                    current_load += sum(o["lines"] or 0 for o in replen)
+                else:
+                    assigned += stores[s]
+                    current_load += store_lines[s]
+
                 used.add(s)
+
+            if current_load >= TARGET:
                 break
+
+        if current_load >= TARGET - TOLERANCE:
+            break
+
+        # =========================
+        # 2. STANDARD (обязательно база)
+        # =========================
+        if current_load == 0:
+            for s in standard:
+                if try_lock(s):
+                    assigned += stores[s]
+                    current_load += store_lines[s]
+                    used.add(s)
+                    break
+
+        # =========================
+        # 3. ДОБОР SMALL (только после базы)
+        # =========================
+        if current_load > 0:
+            for s in small:
+                if s in used:
+                    continue
+
+                if current_load >= TARGET - TOLERANCE:
+                    break
+
+                if try_lock(s):
+                    assigned += stores[s]
+                    current_load += store_lines[s]
+                    used.add(s)
+
+        # =========================
+        # 4. EXCEPTION: ONLY SMALL
+        # =========================
+        if current_load == 0 and not standard and not large and small:
+
+            for s in small:
+                if try_lock(s):
+                    assigned += stores[s]
+                    current_load += store_lines[s]
+                    used.add(s)
+
+                    if current_load >= TARGET - TOLERANCE:
+                        break
+
+        # =========================
+        # 5. EXIT CONDITION
+        # =========================
+        if current_load >= TARGET - TOLERANCE:
+            break
 
     # ===== CHECK =====
     if not assigned:
         return [], False, False
 
-    # ===== RESERVE IN DB =====
+    # ===== DB UPDATE =====
     conn = get_conn()
     cur = conn.cursor()
+
     ids = [o["order"] for o in assigned]
+
     cur.execute("""
         UPDATE orders
-        SET assigned_to = %s, assigned_at = NOW()
+        SET assigned_to = %s,
+            assigned_at = NOW()
         WHERE order_id = ANY(%s)
-        AND (
-            assigned_to IS NULL
-            OR assigned_at < NOW() - INTERVAL '20 minutes'
-        )
+          AND (
+              assigned_to IS NULL
+              OR assigned_at < NOW() - INTERVAL '20 minutes'
+          )
         RETURNING order_id
     """, (user, ids))
+
     updated = cur.fetchall()
     conn.commit()
     conn.close()
@@ -304,6 +354,7 @@ def assign_orders(user):
 
     # ===== REDIS =====
     r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
+
     return assigned, False, False
 
 # ===== CONFIRM =====
