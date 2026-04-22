@@ -168,7 +168,7 @@ def assign_orders(user):
     if pending:
         return json.loads(pending), False, False
 
-    # ===== FALLBACK ИЗ БД =====
+    # ===== FALLBACK =====
     conn = get_conn()
     cur = conn.cursor()
 
@@ -196,13 +196,12 @@ def assign_orders(user):
             for r in rows
         ], False, False
 
-    # ===== НОВАЯ ВЫДАЧА =====
+    # ===== LOAD =====
     orders = load_orders()
-
     if not orders:
         return [], False, False
 
-    # ===== ГРУППИРОВКА =====
+    # ===== GROUP =====
     stores, store_lines = {}, {}
 
     for o in orders:
@@ -210,9 +209,8 @@ def assign_orders(user):
         stores.setdefault(s, []).append(o)
         store_lines[s] = store_lines.get(s, 0) + (o.get("lines") or 0)
 
-    # ===== ГРУППИРОВКА ПО ПРИОРИТЕТУ =====
+    # ===== PRIORITY MAP =====
     priority_map = {}
-
     for s in stores:
         p = next((x for x in PRIORITY_ORDER if s.startswith(x)), "OTHER")
         priority_map.setdefault(p, []).append(s)
@@ -244,14 +242,14 @@ def assign_orders(user):
             conn.close()
             return False
 
-    # ===== СТРОГИЙ ПРОХОД ПО ПРИОРИТЕТАМ =====
+    # ===== MAIN LOOP =====
     for priority in PRIORITY_ORDER:
 
         group = priority_map.get(priority, [])
         if not group:
             continue
 
-        # --- классификация внутри приоритета ---
+        # --- classify ---
         group_small = []
         group_standard = []
         group_large = []
@@ -266,53 +264,58 @@ def assign_orders(user):
             else:
                 group_small.append(s)
 
-        # --- сортировка (ВАЖНО) ---
+        # --- sort biggest first ---
         group_large.sort(key=lambda s: -store_lines[s])
         group_standard.sort(key=lambda s: -store_lines[s])
         group_small.sort(key=lambda s: -store_lines[s])
 
         # ===== 1. LARGE =====
         for s in group_large:
-            if try_lock(s):
-                replen, other = split_replen_and_other(stores[s])
-                assigned = replen if replen else other
-                used.add(s)
-                current_load = store_lines[s]
+            if current_load >= TARGET:
                 break
 
-        if current_load >= TARGET - TOLERANCE:
-            break
+            if try_lock(s):
+                replen, other = split_replen_and_other(stores[s])
+
+                # 🔥 НЕ ПЕРЕТИРАЕМ
+                batch = replen if replen else stores[s]
+
+                assigned += batch
+                current_load += sum(o["lines"] or 0 for o in batch)
+                used.add(s)
 
         # ===== 2. STANDARD =====
         for s in group_standard:
+            if current_load >= TARGET:
+                break
+
             if try_lock(s):
                 assigned += stores[s]
                 current_load += store_lines[s]
                 used.add(s)
-                break
 
-        # ===== 3. ДОБОР SMALL =====
+        # ===== 3. SMALL =====
         for s in group_small:
-            if s in used:
-                continue
-
             if current_load >= TARGET - TOLERANCE:
                 break
 
+            if s in used:
+                continue
+
             if try_lock(s):
                 assigned += stores[s]
                 current_load += store_lines[s]
                 used.add(s)
 
-        # ===== ВАЖНО: РЕШАЕМ ВЫХОДИТЬ ИЛИ НЕТ =====
+        # ===== EXIT CONDITION =====
         if current_load >= TARGET - TOLERANCE:
             break
 
-    # ===== ПРОВЕРКА =====
+    # ===== CHECK =====
     if not assigned:
         return [], False, False
 
-    # ===== РЕЗЕРВ В БД =====
+    # ===== DB UPDATE =====
     conn = get_conn()
     cur = conn.cursor()
 
@@ -335,7 +338,6 @@ def assign_orders(user):
     conn.close()
 
     if len(updated) != len(ids):
-        # rollback locks
         conn = get_conn()
         cur = conn.cursor()
         for s in used:
