@@ -379,7 +379,58 @@ def confirm_orders(user):
         "user": user,
         "orders": orders
     }))
+    
+# 🔥 ВОТ СЮДА ВСТАВЛЯЕШЬ 👇
 
+@app.route("/dashboard_data")
+def dashboard_data():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT assigned_to, store, total_lines
+        FROM orders
+        WHERE assigned = FALSE
+          AND assigned_to IS NOT NULL
+    """)
+
+    rows = cur.fetchall()
+
+    cur.execute("""
+        SELECT COUNT(*), COALESCE(SUM(total_lines),0)
+        FROM orders
+        WHERE assigned = FALSE
+    """)
+
+    total_orders, total_lines = cur.fetchone()
+
+    conn.close()
+
+    workers = {}
+
+    for worker, store, lines in rows:
+        if not worker:
+            continue
+
+        workers.setdefault(worker, {
+            "lines": 0,
+            "orders": 0,
+            "stores": set()
+        })
+
+        workers[worker]["lines"] += int(lines or 0)
+        workers[worker]["orders"] += 1
+        workers[worker]["stores"].add(store)
+
+    for w in workers:
+        workers[w]["stores"] = list(workers[w]["stores"])
+
+    return {
+        "workers": workers,
+        "total_orders": total_orders,
+        "total_lines": int(total_lines or 0)
+    }
+    
 HTML = """
 <!DOCTYPE html>
 <html>
