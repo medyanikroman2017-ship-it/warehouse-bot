@@ -288,7 +288,7 @@ def assign_orders(user):
                 if current_load >= TARGET - TOLERANCE:
                     break
     # ===== 4. LARGE (только если больше ничего нет) =====
-if not assigned:
+    if not assigned:
     for s in large:
         if try_lock(s):
             replen, other = split_replen_and_other(stores[s])
