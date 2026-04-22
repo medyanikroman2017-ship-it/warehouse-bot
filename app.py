@@ -498,7 +498,7 @@ button {
 
 <form method="post">
     <input type="hidden" name="user" value="{{user}}">
-    <button name="action" value="confirm">✅ Potwierdź odbióр</button>
+    <button name="action" value="confirm">✅ Potwierdź odbiór</button>
 </form>
 
 {% for o in orders %}
