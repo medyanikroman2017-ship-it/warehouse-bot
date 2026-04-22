@@ -386,9 +386,9 @@ def dashboard_data():
     conn = get_conn()
     cur = conn.cursor()
 
-    # активные (в работе)
+    # активные заказы (в работе)
     cur.execute("""
-        SELECT assigned_to, store, total_lines
+        SELECT assigned_to, store, total_lines, assigned_at
         FROM orders
         WHERE assigned = FALSE
           AND assigned_to IS NOT NULL
@@ -407,19 +407,29 @@ def dashboard_data():
 
     workers = {}
 
-    for worker, store, lines in rows:
+    for worker, store, lines, assigned_at in rows:
         if not worker:
             continue
 
         workers.setdefault(worker, {
             "lines": 0,
             "orders": 0,
-            "stores": set()
+            "stores": set(),
+            "pending": False,
+            "oldest": assigned_at
         })
 
         workers[worker]["lines"] += int(lines or 0)
         workers[worker]["orders"] += 1
         workers[worker]["stores"].add(store)
+
+        # берем самый старый заказ (для таймера)
+        if assigned_at and workers[worker]["oldest"]:
+            if assigned_at < workers[worker]["oldest"]:
+                workers[worker]["oldest"] = assigned_at
+
+        # если есть assigned → значит pending
+        workers[worker]["pending"] = True
 
     for w in workers:
         workers[w]["stores"] = list(workers[w]["stores"])
@@ -431,7 +441,6 @@ def dashboard_data():
     }
 
 
-# ===== DASHBOARD UI =====
 @app.route("/dashboard")
 def dashboard():
     return """
@@ -439,37 +448,29 @@ def dashboard():
     <head>
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <style>
-            body {
-                font-family: Arial;
-                background:#f5f5f5;
-                padding:10px;
-            }
+            body { font-family: Arial; background:#f5f5f5; padding:10px; }
 
             .card {
                 background:white;
                 padding:12px;
                 margin-bottom:10px;
                 border-radius:10px;
-                box-shadow: 0 2px 5px rgba(0,0,0,0.1);
             }
 
-            .big {
-                font-size:20px;
-                font-weight:bold;
-            }
+            .big { font-size:20px; font-weight:bold; }
 
             .red { background:#ffcccc; }
             .yellow { background:#fff3cd; }
             .green { background:#d4edda; }
 
-            h2 {
-                margin-bottom:10px;
+            .pending {
+                border: 3px solid red;
             }
         </style>
     </head>
     <body>
 
-    <h2>📊 Warehouse Dashboard</h2>
+    <h2>📊 Dashboard</h2>
 
     <div id="summary" class="card"></div>
     <div id="workers"></div>
@@ -481,27 +482,35 @@ def dashboard():
         return "green";
     }
 
+    function formatTime(ts){
+        if (!ts) return "";
+        let d = new Date(ts);
+        return d.toLocaleTimeString();
+    }
+
     async function load() {
         let res = await fetch('/dashboard_data');
         let data = await res.json();
 
-        // summary
         document.getElementById('summary').innerHTML =
             "<div class='big'>Remaining lines: " + data.total_lines + "</div>" +
             "<div>Remaining orders: " + data.total_orders + "</div>";
 
-        // workers
         let html = "";
 
         for (let w in data.workers) {
             let u = data.workers[w];
             let color = getColor(u.lines);
 
-            html += "<div class='card " + color + "'>" +
+            let pendingClass = u.pending ? "pending" : "";
+
+            html += "<div class='card " + color + " " + pendingClass + "'>" +
                 "<b>👤 " + w + "</b><br>" +
                 "Lines: " + u.lines + "<br>" +
                 "Orders: " + u.orders + "<br>" +
-                "Stores: " + u.stores.join(", ") +
+                "Stores: " + u.stores.join(", ") + "<br>" +
+                (u.pending ? "⚠️ NOT CONFIRMED" : "✅ OK") + "<br>" +
+                "⏱ Since: " + formatTime(u.oldest) +
                 "</div>";
         }
 
