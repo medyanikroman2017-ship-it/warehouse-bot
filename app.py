@@ -14,6 +14,8 @@ print("🚀 NEW VERSION LOADED:", time.time())
 PENDING_TTL = 1200
 r = redis.from_url(os.environ.get("REDIS_URL"), decode_responses=True)
 DB_URL = os.environ.get("DATABASE_URL")
+SPLIT_KEY = "split_queue"
+SPLIT_TTL = 1200  # 20 минут
 
 # ===== PRIORITY =====
 PRIORITY_ORDER = [
@@ -144,10 +146,20 @@ def split_replen_and_other(orders):
             other.append(o)
     return replen, other
 
+
 def assign_orders(user):
     pending = r.get(f"pending:{user}")
     if pending:
         return json.loads(pending), False, False
+        
+    # ===== SPLIT QUEUE =====
+    split_raw = r.get(SPLIT_KEY)
+    if split_raw:
+        batch = json.loads(split_raw)
+        r.delete(SPLIT_KEY)
+
+        r.setex(f"pending:{user}", PENDING_TTL, json.dumps(batch))
+        return batch, False, False    
 
     # ===== FALLBACK =====
     conn = get_conn()
@@ -230,7 +242,6 @@ def assign_orders(user):
         if not group:
             continue
 
-        # --- classify ---
         small, standard, large = [], [], []
 
         for s in group:
@@ -249,29 +260,43 @@ def assign_orders(user):
         large.sort(key=lambda s: -store_lines[s])
 
         # =========================
-        # 1. LARGE (разделяем правильно)
+        # 1. LARGE
         # =========================
         for s in large:
-            if try_lock(s):
-                replen, other = split_replen_and_other(stores[s])
-
-                if replen:
-                    assigned += replen
-                    current_load += sum(o["lines"] or 0 for o in replen)
-                else:
-                    assigned += stores[s]
-                    current_load += store_lines[s]
-
-                used.add(s)
 
             if current_load >= TARGET:
                 break
 
-        if current_load >= TARGET - TOLERANCE:
-            break
+            if not try_lock(s):
+                continue
+
+            replen, other = split_replen_and_other(stores[s])
+
+            if replen and other:
+                assigned += replen
+                current_load += sum(o["lines"] or 0 for o in replen)
+
+                r.setex(SPLIT_KEY, SPLIT_TTL, json.dumps(other))
+
+            elif replen:
+                assigned += replen
+                current_load += sum(o["lines"] or 0 for o in replen)
+
+            elif other:
+                assigned += other
+                current_load += sum(o["lines"] or 0 for o in other)
+
+            else:
+                assigned += stores[s]
+                current_load += store_lines[s]
+
+            used.add(s)
+
+            if current_load >= TARGET:
+                break
 
         # =========================
-        # 2. STANDARD (обязательно база)
+        # 2. STANDARD (база)
         # =========================
         if current_load == 0:
             for s in standard:
@@ -282,7 +307,7 @@ def assign_orders(user):
                     break
 
         # =========================
-        # 3. ДОБОР SMALL (только после базы)
+        # 3. SMALL (добор)
         # =========================
         if current_load > 0:
             for s in small:
@@ -298,7 +323,7 @@ def assign_orders(user):
                     used.add(s)
 
         # =========================
-        # 4. EXCEPTION: ONLY SMALL
+        # 4. ONLY SMALL (исключение)
         # =========================
         if current_load == 0 and not standard and not large and small:
 
@@ -312,7 +337,7 @@ def assign_orders(user):
                         break
 
         # =========================
-        # 5. EXIT CONDITION
+        # 5. EXIT
         # =========================
         if current_load >= TARGET - TOLERANCE:
             break
