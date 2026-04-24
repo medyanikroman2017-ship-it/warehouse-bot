@@ -525,7 +525,14 @@ def dashboard():
       let d = new Date(ts);
       return d.toLocaleTimeString();
     }
-    async function resetSystem() {
+async function resetSystem() {
+    let user = prompt("Введите admin ID:");
+
+    if (!user) {
+        alert("❌ Отменено");
+        return;
+    }
+
     if (!confirm("⚠️ Ты уверен что хочешь удалить ВСЕ заказы?")) return;
 
     let res = await fetch('/reset', {
@@ -533,7 +540,9 @@ def dashboard():
         headers: {
             "Content-Type": "application/x-www-form-urlencoded"
         },
-        body: "user=admin"
+        body: new URLSearchParams({
+            user: user
+        })
     });
 
     let data = await res.json();
