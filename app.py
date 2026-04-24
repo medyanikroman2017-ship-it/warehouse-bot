@@ -136,7 +136,11 @@ def load_orders():
         for r in rows
     ]
 
+
 # ===== SPLIT =====
+
+MAX_STORES = 2
+
 def split_replen_and_other(orders):
     replen, other = [], []
     for o in orders:
@@ -208,7 +212,7 @@ def assign_orders(user):
         p = next((x for x in PRIORITY_ORDER if s.startswith(x)), "OTHER")
         priority_map.setdefault(p, []).append(s)
 
-    # ===== ТОЛЬКО 1 ПРИОРИТЕТ =====
+    # ===== ONLY 1 PRIORITY =====
     active_priority = None
     for p in PRIORITY_ORDER:
         if p in priority_map and priority_map[p]:
@@ -233,7 +237,7 @@ def assign_orders(user):
         else:
             small.append(s)
 
-    # ===== SORT (меньший → больший) =====
+    # ===== SORT =====
     standard.sort(key=lambda s: store_lines[s])
     small.sort(key=lambda s: store_lines[s])
     large.sort(key=lambda s: store_lines[s])
@@ -275,6 +279,9 @@ def assign_orders(user):
         if current_load >= TARGET:
             break
 
+        if len(used) >= MAX_STORES:
+            break
+
         if not try_lock(s):
             continue
 
@@ -283,7 +290,6 @@ def assign_orders(user):
         if replen and other:
             assigned += replen
             current_load += sum(o["lines"] or 0 for o in replen)
-
             r.setex(SPLIT_KEY, SPLIT_TTL, json.dumps(other))
 
         elif replen:
@@ -301,10 +307,14 @@ def assign_orders(user):
         used.add(s)
 
     # =========================
-    # 2. STANDARD (база)
+    # 2. STANDARD
     # =========================
     if current_load == 0:
         for s in standard:
+
+            if len(used) >= MAX_STORES:
+                break
+
             if try_lock(s):
                 assigned += stores[s]
                 current_load += store_lines[s]
@@ -312,7 +322,7 @@ def assign_orders(user):
                 break
 
     # =========================
-    # 3. SMART SMALL ADD
+    # 3. SMALL ADD
     # =========================
     small_added = 0
 
@@ -320,6 +330,9 @@ def assign_orders(user):
         for s in small:
             if s in used:
                 continue
+
+            if len(used) >= MAX_STORES:
+                break
 
             if current_load >= TARGET:
                 break
@@ -342,6 +355,10 @@ def assign_orders(user):
     if current_load == 0 and not standard and not large and small:
 
         for s in small:
+
+            if len(used) >= MAX_STORES:
+                break
+
             if try_lock(s):
                 assigned += stores[s]
                 current_load += store_lines[s]
