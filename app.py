@@ -208,11 +208,8 @@ def assign_orders(user):
         p = next((x for x in PRIORITY_ORDER if s.startswith(x)), "OTHER")
         priority_map.setdefault(p, []).append(s)
 
-    # =========================================
-    # 🔥 ВАЖНО: БЕРЕМ ТОЛЬКО 1 АКТИВНЫЙ ПРИОРИТЕТ
-    # =========================================
+    # ===== ТОЛЬКО 1 ПРИОРИТЕТ =====
     active_priority = None
-
     for p in PRIORITY_ORDER:
         if p in priority_map and priority_map[p]:
             active_priority = p
@@ -223,7 +220,7 @@ def assign_orders(user):
 
     group = priority_map[active_priority]
 
-    # ===== КЛАССИФИКАЦИЯ =====
+    # ===== CLASSIFY =====
     small, standard, large = [], [], []
 
     for s in group:
@@ -236,7 +233,7 @@ def assign_orders(user):
         else:
             small.append(s)
 
-    # ===== СОРТИРОВКА (от меньшего к большему) =====
+    # ===== SORT (меньший → больший) =====
     standard.sort(key=lambda s: store_lines[s])
     small.sort(key=lambda s: store_lines[s])
     large.sort(key=lambda s: store_lines[s])
@@ -247,6 +244,8 @@ def assign_orders(user):
 
     TARGET = 400
     TOLERANCE = 40
+    MIN_LOAD = 300
+    MAX_SMALL_ADDS = 2
 
     # ===== LOCK =====
     def try_lock(store):
@@ -302,7 +301,7 @@ def assign_orders(user):
         used.add(s)
 
     # =========================
-    # 2. STANDARD (обязательно база)
+    # 2. STANDARD (база)
     # =========================
     if current_load == 0:
         for s in standard:
@@ -313,23 +312,32 @@ def assign_orders(user):
                 break
 
     # =========================
-    # 3. ДОБОР SMALL
+    # 3. SMART SMALL ADD
     # =========================
+    small_added = 0
+
     if current_load > 0:
         for s in small:
             if s in used:
                 continue
 
-            if current_load >= TARGET - TOLERANCE:
+            if current_load >= TARGET:
+                break
+
+            if current_load >= MIN_LOAD and small_added >= 1:
+                break
+
+            if small_added >= MAX_SMALL_ADDS:
                 break
 
             if try_lock(s):
                 assigned += stores[s]
                 current_load += store_lines[s]
                 used.add(s)
+                small_added += 1
 
     # =========================
-    # 4. ONLY SMALL (если нет другого)
+    # 4. ONLY SMALL (fallback)
     # =========================
     if current_load == 0 and not standard and not large and small:
 
