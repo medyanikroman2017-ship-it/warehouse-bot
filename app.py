@@ -466,16 +466,28 @@ def dashboard_data():
 # ===== RESET SYSTEM =====
 @app.route("/reset", methods=["POST"])
 def reset_system():
+    user = request.form.get("user") or request.headers.get("X-USER")
+
+    # 🔐 доступ только для admin
+    if user != "admin":
+        return {"status": "error", "message": "Unauthorized"}, 403
+
     try:
         conn = get_conn()
         cur = conn.cursor()
+
         cur.execute("TRUNCATE TABLE orders")
         cur.execute("TRUNCATE TABLE store_locks")
+
         conn.commit()
         conn.close()
+
+        # очистка Redis pending
         for key in r.keys("pending:*"):
             r.delete(key)
+
         return {"status": "ok"}
+
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
@@ -514,15 +526,25 @@ def dashboard():
       return d.toLocaleTimeString();
     }
     async function resetSystem() {
-      if (!confirm("⚠️ Ты уверен что хочешь удалить ВСЕ заказы?")) return;
-      let res = await fetch('/reset', { method: 'POST' });
-      let data = await res.json();
-      if (data.status === "ok") {
+    if (!confirm("⚠️ Ты уверен что хочешь удалить ВСЕ заказы?")) return;
+
+    let res = await fetch('/reset', {
+        method: 'POST',
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: "user=admin"
+    });
+
+    let data = await res.json();
+
+    if (data.status === "ok") {
         alert("✅ Система очищена");
-      } else {
+    } else {
         alert("❌ Ошибка: " + data.message);
-      }
-      load();
+    }
+
+    load();
     }
     async function load() {
       let res = await fetch('/dashboard_data');
