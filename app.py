@@ -4,6 +4,7 @@ import redis
 import psycopg2
 import pandas as pd
 import gspread
+import random
 from psycopg2.extras import execute_values
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -272,13 +273,41 @@ def assign_orders(user):
             return False
 
     # =========================
-    # 1. LARGE
+    # 🎯 WEIGHTED PICK
     # =========================
-    for s in large:
+    candidates = []
 
-        if current_load >= TARGET:
-            break
+    if large:
+        candidates.append(("large", 0.15))
+    if standard:
+        candidates.append(("standard", 0.6))
+    if small:
+        candidates.append(("small", 0.25))
 
+    def pick_type():
+        total = sum(w for _, w in candidates)
+        r_val = random.uniform(0, total)
+        upto = 0
+        for t, w in candidates:
+            if upto + w >= r_val:
+                return t
+            upto += w
+
+    picked_type = pick_type()
+
+    # ===== SELECT POOL =====
+    if picked_type == "large":
+        pool = large
+    elif picked_type == "standard":
+        pool = standard
+    else:
+        if current_load == 0 and standard:
+            pool = standard
+        else:
+            pool = small
+
+    # ===== PICK STORE =====
+    for s in pool:
         if len(used) >= MAX_STORES:
             break
 
@@ -305,24 +334,10 @@ def assign_orders(user):
             current_load += store_lines[s]
 
         used.add(s)
+        break
 
     # =========================
-    # 2. STANDARD
-    # =========================
-    if current_load == 0:
-        for s in standard:
-
-            if len(used) >= MAX_STORES:
-                break
-
-            if try_lock(s):
-                assigned += stores[s]
-                current_load += store_lines[s]
-                used.add(s)
-                break
-
-    # =========================
-    # 3. SMALL ADD
+    # ➕ SMALL ADD (добор)
     # =========================
     small_added = 0
 
@@ -350,12 +365,10 @@ def assign_orders(user):
                 small_added += 1
 
     # =========================
-    # 4. ONLY SMALL (fallback)
+    # 🆘 ONLY SMALL (fallback)
     # =========================
     if current_load == 0 and not standard and not large and small:
-
         for s in small:
-
             if len(used) >= MAX_STORES:
                 break
 
