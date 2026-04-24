@@ -151,7 +151,7 @@ def assign_orders(user):
     pending = r.get(f"pending:{user}")
     if pending:
         return json.loads(pending), False, False
-        
+
     # ===== SPLIT QUEUE =====
     split_raw = r.get(SPLIT_KEY)
     if split_raw:
@@ -159,7 +159,7 @@ def assign_orders(user):
         r.delete(SPLIT_KEY)
 
         r.setex(f"pending:{user}", PENDING_TTL, json.dumps(batch))
-        return batch, False, False    
+        return batch, False, False
 
     # ===== FALLBACK =====
     conn = get_conn()
@@ -208,6 +208,39 @@ def assign_orders(user):
         p = next((x for x in PRIORITY_ORDER if s.startswith(x)), "OTHER")
         priority_map.setdefault(p, []).append(s)
 
+    # =========================================
+    # 🔥 ВАЖНО: БЕРЕМ ТОЛЬКО 1 АКТИВНЫЙ ПРИОРИТЕТ
+    # =========================================
+    active_priority = None
+
+    for p in PRIORITY_ORDER:
+        if p in priority_map and priority_map[p]:
+            active_priority = p
+            break
+
+    if not active_priority:
+        return [], False, False
+
+    group = priority_map[active_priority]
+
+    # ===== КЛАССИФИКАЦИЯ =====
+    small, standard, large = [], [], []
+
+    for s in group:
+        lines = store_lines[s]
+
+        if lines >= 1200:
+            large.append(s)
+        elif lines >= 200:
+            standard.append(s)
+        else:
+            small.append(s)
+
+    # ===== СОРТИРОВКА (от меньшего к большему) =====
+    standard.sort(key=lambda s: store_lines[s])
+    small.sort(key=lambda s: store_lines[s])
+    large.sort(key=lambda s: store_lines[s])
+
     assigned = []
     used = set()
     current_load = 0
@@ -235,112 +268,79 @@ def assign_orders(user):
             conn.close()
             return False
 
-    # ===== MAIN LOOP =====
-    for priority in PRIORITY_ORDER:
+    # =========================
+    # 1. LARGE
+    # =========================
+    for s in large:
 
-        group = priority_map.get(priority, [])
-        if not group:
+        if current_load >= TARGET:
+            break
+
+        if not try_lock(s):
             continue
 
-        small, standard, large = [], [], []
+        replen, other = split_replen_and_other(stores[s])
 
-        for s in group:
-            lines = store_lines[s]
+        if replen and other:
+            assigned += replen
+            current_load += sum(o["lines"] or 0 for o in replen)
 
-            if lines >= 1200:
-                large.append(s)
-            elif lines >= 200:
-                standard.append(s)
-            else:
-                small.append(s)
+            r.setex(SPLIT_KEY, SPLIT_TTL, json.dumps(other))
 
-        # --- sort ---
-        standard.sort(key=lambda s: -store_lines[s])
-        small.sort(key=lambda s: -store_lines[s])
-        large.sort(key=lambda s: -store_lines[s])
+        elif replen:
+            assigned += replen
+            current_load += sum(o["lines"] or 0 for o in replen)
 
-        # =========================
-        # 1. LARGE
-        # =========================
-        for s in large:
+        elif other:
+            assigned += other
+            current_load += sum(o["lines"] or 0 for o in other)
 
-            if current_load >= TARGET:
-                break
+        else:
+            assigned += stores[s]
+            current_load += store_lines[s]
 
-            if not try_lock(s):
-                continue
+        used.add(s)
 
-            replen, other = split_replen_and_other(stores[s])
-
-            if replen and other:
-                assigned += replen
-                current_load += sum(o["lines"] or 0 for o in replen)
-
-                r.setex(SPLIT_KEY, SPLIT_TTL, json.dumps(other))
-
-            elif replen:
-                assigned += replen
-                current_load += sum(o["lines"] or 0 for o in replen)
-
-            elif other:
-                assigned += other
-                current_load += sum(o["lines"] or 0 for o in other)
-
-            else:
+    # =========================
+    # 2. STANDARD (обязательно база)
+    # =========================
+    if current_load == 0:
+        for s in standard:
+            if try_lock(s):
                 assigned += stores[s]
                 current_load += store_lines[s]
-
-            used.add(s)
-
-            if current_load >= TARGET:
+                used.add(s)
                 break
 
-        # =========================
-        # 2. STANDARD (база)
-        # =========================
-        if current_load == 0:
-            for s in standard:
-                if try_lock(s):
-                    assigned += stores[s]
-                    current_load += store_lines[s]
-                    used.add(s)
-                    break
+    # =========================
+    # 3. ДОБОР SMALL
+    # =========================
+    if current_load > 0:
+        for s in small:
+            if s in used:
+                continue
 
-        # =========================
-        # 3. SMALL (добор)
-        # =========================
-        if current_load > 0:
-            for s in small:
-                if s in used:
-                    continue
+            if current_load >= TARGET - TOLERANCE:
+                break
+
+            if try_lock(s):
+                assigned += stores[s]
+                current_load += store_lines[s]
+                used.add(s)
+
+    # =========================
+    # 4. ONLY SMALL (если нет другого)
+    # =========================
+    if current_load == 0 and not standard and not large and small:
+
+        for s in small:
+            if try_lock(s):
+                assigned += stores[s]
+                current_load += store_lines[s]
+                used.add(s)
 
                 if current_load >= TARGET - TOLERANCE:
                     break
-
-                if try_lock(s):
-                    assigned += stores[s]
-                    current_load += store_lines[s]
-                    used.add(s)
-
-        # =========================
-        # 4. ONLY SMALL (исключение)
-        # =========================
-        if current_load == 0 and not standard and not large and small:
-
-            for s in small:
-                if try_lock(s):
-                    assigned += stores[s]
-                    current_load += store_lines[s]
-                    used.add(s)
-
-                    if current_load >= TARGET - TOLERANCE:
-                        break
-
-        # =========================
-        # 5. EXIT
-        # =========================
-        if current_load >= TARGET - TOLERANCE:
-            break
 
     # ===== CHECK =====
     if not assigned:
