@@ -308,35 +308,33 @@ def assign_orders(user):
 
     # ===== PICK STORE =====
     for s in pool:
+
         if len(used) >= MAX_STORES:
             break
 
-    if not try_lock(s):
-        continue
+        if not try_lock(s):
+            continue
 
-    replen, other = split_replen_and_other(stores[s])
+        replen, other = split_replen_and_other(stores[s])
 
-    total_lines = sum(o["lines"] or 0 for o in stores[s])
+        total_lines = sum((o.get("lines") or 0) for o in stores[s])
 
-    # 🔥 делим ТОЛЬКО если реально большой магазин
-    if total_lines > TARGET + 100 and replen and other:
+        if total_lines > TARGET + 100 and replen and other:
 
-        assigned += replen
-        current_load += sum(o["lines"] or 0 for o in replen)
+            assigned += replen
+            current_load += sum((o.get("lines") or 0) for o in replen)
 
-        # остаток в очередь
-        r.setex(SPLIT_KEY, SPLIT_TTL, json.dumps(other))
+            r.setex(SPLIT_KEY, SPLIT_TTL, json.dumps(other))
 
-    else:
-        # ✅ обычный случай — берем ВСЁ вместе
-        assigned += stores[s]
-        current_load += total_lines
+        else:
+            assigned += stores[s]
+            current_load += total_lines
 
-    used.add(s)
-    break
+        used.add(s)
+        break
 
     # =========================
-    # ➕ SMALL ADD (добор)
+    # ➕ SMALL ADD
     # =========================
     small_added = 0
 
@@ -364,7 +362,7 @@ def assign_orders(user):
                 small_added += 1
 
     # =========================
-    # 🆘 ONLY SMALL (fallback)
+    # 🆘 ONLY SMALL
     # =========================
     if current_load == 0 and not standard and not large and small:
         for s in small:
