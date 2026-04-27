@@ -381,7 +381,9 @@ def assign_orders(user):
     if not assigned:
         return [], False, False
 
-    # ===== DB UPDATE =====
+    # =========================================
+    # 🔥 ATOMIC CLAIM (NO DUPLICATES EVER)
+    # =========================================
     conn = get_conn()
     cur = conn.cursor()
 
@@ -392,10 +394,7 @@ def assign_orders(user):
         SET assigned_to = %s,
             assigned_at = NOW()
         WHERE order_id = ANY(%s)
-          AND (
-              assigned_to IS NULL
-              OR assigned_at < NOW() - INTERVAL '20 minutes'
-          )
+          AND assigned_to IS NULL
         RETURNING order_id
     """, (user, ids))
 
@@ -403,6 +402,7 @@ def assign_orders(user):
     conn.commit()
     conn.close()
 
+    # ❗ если хоть один не обновился → значит кто-то забрал
     if len(updated) != len(ids):
         conn = get_conn()
         cur = conn.cursor()
