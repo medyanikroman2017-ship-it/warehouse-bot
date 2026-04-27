@@ -311,30 +311,29 @@ def assign_orders(user):
         if len(used) >= MAX_STORES:
             break
 
-        if not try_lock(s):
-            continue
+    if not try_lock(s):
+        continue
 
-        replen, other = split_replen_and_other(stores[s])
+    replen, other = split_replen_and_other(stores[s])
 
-        if replen and other:
-            assigned += replen
-            current_load += sum(o["lines"] or 0 for o in replen)
-            r.setex(SPLIT_KEY, SPLIT_TTL, json.dumps(other))
+    total_lines = sum(o["lines"] or 0 for o in stores[s])
 
-        elif replen:
-            assigned += replen
-            current_load += sum(o["lines"] or 0 for o in replen)
+    # 🔥 делим ТОЛЬКО если реально большой магазин
+    if total_lines > TARGET + 100 and replen and other:
 
-        elif other:
-            assigned += other
-            current_load += sum(o["lines"] or 0 for o in other)
+        assigned += replen
+        current_load += sum(o["lines"] or 0 for o in replen)
 
-        else:
-            assigned += stores[s]
-            current_load += store_lines[s]
+        # остаток в очередь
+        r.setex(SPLIT_KEY, SPLIT_TTL, json.dumps(other))
 
-        used.add(s)
-        break
+    else:
+        # ✅ обычный случай — берем ВСЁ вместе
+        assigned += stores[s]
+        current_load += total_lines
+
+    used.add(s)
+    break
 
     # =========================
     # ➕ SMALL ADD (добор)
