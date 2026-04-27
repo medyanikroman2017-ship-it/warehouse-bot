@@ -316,10 +316,10 @@ def assign_orders(user):
             continue
 
         replen, other = split_replen_and_other(stores[s])
+        total_lines = store_lines[s]
 
-        total_lines = sum((o.get("lines") or 0) for o in stores[s])
-
-        if total_lines > TARGET + 100 and replen and other:
+        # 🔥 ТОЛЬКО LARGE делим
+        if total_lines >= 1200 and replen and other:
 
             assigned += replen
             current_load += sum((o.get("lines") or 0) for o in replen)
@@ -382,7 +382,7 @@ def assign_orders(user):
         return [], False, False
 
     # =========================================
-    # 🔥 ATOMIC CLAIM (NO DUPLICATES EVER)
+    # 🔒 NO DUPLICATES (atomic)
     # =========================================
     conn = get_conn()
     cur = conn.cursor()
@@ -402,7 +402,6 @@ def assign_orders(user):
     conn.commit()
     conn.close()
 
-    # ❗ если хоть один не обновился → значит кто-то забрал
     if len(updated) != len(ids):
         conn = get_conn()
         cur = conn.cursor()
