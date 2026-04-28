@@ -175,6 +175,26 @@ def assign_new_lines(user, orders):
         stores.setdefault(s, []).append(o)
         store_lines[s] = store_lines.get(s, 0) + (o.get("lines") or 0)
 
+    # ===== 🔒 LOCK FUNCTION (ВСТАВЛЯЕШЬ ВОТ СЮДА) =====
+    def try_lock(store):
+        conn = get_conn()
+        cur = conn.cursor()
+        try:
+            cur.execute("""
+                INSERT INTO store_locks (store, user_id, locked_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (store) DO NOTHING
+                RETURNING store
+            """, (store, user))
+            locked = cur.fetchone()
+            conn.commit()
+            conn.close()
+            return locked is not None
+        except:
+            conn.rollback()
+            conn.close()
+            return False
+
     # ===== PRIORITY =====
     priority_map = {}
     for s in stores:
@@ -209,6 +229,9 @@ def assign_new_lines(user, orders):
 
         # ===== FIRST STORE =====
         if current_load == 0:
+            
+            if not try_lock(s):
+                continue
 
             assigned += stores[s]
             current_load += total
@@ -229,6 +252,10 @@ def assign_new_lines(user, orders):
         else:
 
             if current_load < 200:
+                
+                if not try_lock(s):
+                    continue
+                
                 assigned += stores[s]
                 current_load += total
                 used.add(s)
