@@ -164,6 +164,78 @@ def split_replen_and_other(orders):
             other.append(o)
     return replen, other
 
+# ===== NEW LINES LOGIC =====
+def assign_new_lines(user, orders):
+
+    # ===== GROUP =====
+    stores, store_lines = {}, {}
+
+    for o in orders:
+        s = o["store"]
+        stores.setdefault(s, []).append(o)
+        store_lines[s] = store_lines.get(s, 0) + (o.get("lines") or 0)
+
+    # ===== PRIORITY =====
+    priority_map = {}
+    for s in stores:
+        p = next((x for x in PRIORITY_ORDER if s.startswith(x)), "OTHER")
+        priority_map.setdefault(p, []).append(s)
+
+    # ===== ONLY 1 PRIORITY =====
+    active_priority = None
+    for p in PRIORITY_ORDER:
+        if p in priority_map and priority_map[p]:
+            active_priority = p
+            break
+
+    if not active_priority:
+        return [], set()
+
+    group = priority_map[active_priority]
+
+    # ===== SORT (от меньшего к большему) =====
+    group.sort(key=lambda s: store_lines[s])
+
+    assigned = []
+    used = set()
+    current_load = 0
+
+    for s in group:
+
+        if len(used) >= MAX_STORES:
+            break
+
+        total = store_lines[s]
+
+        # ===== FIRST STORE =====
+        if current_load == 0:
+
+            assigned += stores[s]
+            current_load += total
+            used.add(s)
+
+            # 👉 если большой — берем 1 и стоп
+            if total >= 400:
+                break
+
+            # 👉 если средний — тоже 1 и стоп
+            if total >= 200:
+                break
+
+            # 👉 если маленький — пробуем взять второй
+            continue
+
+        # ===== SECOND STORE =====
+        else:
+
+            if current_load < 200:
+                assigned += stores[s]
+                current_load += total
+                used.add(s)
+
+            break
+
+    return assigned, used
 
 def assign_orders(user, order_type):
     pending = r.get(f"pending:{user}")
@@ -211,12 +283,51 @@ def assign_orders(user, order_type):
     orders = load_orders()
     if not orders:
         return [], False, False
-        
-    # ===== FILTER BY TYPE =====
+
+    # ===== FILTER BY TYPE (СНАЧАЛА!) =====
     orders = [o for o in orders if o.get("order_type") == order_type]
 
     if not orders:
         return [], False, False
+        
+    # ===== NEW LINES MODE =====
+    if order_type == "NEW_LINES":
+        assigned, used = assign_new_lines(user, orders)
+
+        if not assigned:
+            return [], False, False
+            
+        # ===== DB UPDATE =====
+        conn = get_conn()
+        cur = conn.cursor()
+
+        ids = [o["order"] for o in assigned]
+        
+        cur.execute("""
+            UPDATE orders
+            SET assigned_to = %s,
+                assigned_at = NOW()
+            WHERE order_id = ANY(%s)
+              AND assigned_to IS NULL
+            RETURNING order_id
+        """, (user, ids))
+         
+        updated = cur.fetchall()
+        conn.commit()
+        conn.close()
+
+        if len(updated) != len(ids):
+            conn = get_conn()
+            cur = conn.cursor()
+            for s in used:
+                cur.execute("DELETE FROM store_locks WHERE store = %s", (s,))
+            conn.commit()
+            conn.close()
+            return [], False, False
+
+        r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
+
+        return assigned, False, False
     
     # ===== GROUP =====
     stores, store_lines = {}, {}
