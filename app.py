@@ -76,6 +76,15 @@ def log_worker():
 
 threading.Thread(target=log_worker, daemon=True).start()
 
+# ===== TYPE DETECTION =====
+def detect_order_type(susr3):
+    susr3 = (susr3 or "").upper()
+
+    if "REPLEN" in susr3:
+        return "REPLENISHMENT"
+    else:
+        return "NEW_LINES"
+        
 # ===== UPLOAD =====
 def upload_orders(file):
     df = pd.read_excel(file)
@@ -85,19 +94,22 @@ def upload_orders(file):
     data = []
     for _, row in df.iterrows():
         try:
+            susr3 = str(row["SUSR3"] or "")
+            
             data.append((
                 str(row["ORDERKEY"]).zfill(10),
                 str(row["CONSIGNEEKEY"]),
                 int(row["TOTALQTY"]),
                 int(row["TOTALORDERLINES"]) if pd.notna(row["TOTALORDERLINES"]) else 0,
-                str(row["SUSR3"] or ""),
-                str(row["REFERENCENUM"] or "")
+                susr3,
+                str(row["REFERENCENUM"] or ""),
+                detect_order_type(susr3)
             ))
         except:
             pass
     execute_values(
         cur,
-        "INSERT INTO orders (order_id, store, qty, total_lines, susr3, ref) VALUES %s",
+        "INSERT INTO orders (order_id, store, qty, total_lines, susr3, ref, order_type) VALUES %s",
         data
     )
     conn.commit()
@@ -115,7 +127,7 @@ def load_orders():
     conn.commit()
 
     cur.execute("""
-        SELECT order_id, store, qty, total_lines, susr3, ref
+        SELECT order_id, store, qty, total_lines, susr3, ref, order_type
         FROM orders
         WHERE assigned = FALSE
         AND (
@@ -133,6 +145,7 @@ def load_orders():
             "lines": r[3],
             "susr3": r[4] or "",
             "ref": r[5] or "",
+            "order_type": r[6],
         }
         for r in rows
     ]
@@ -152,7 +165,7 @@ def split_replen_and_other(orders):
     return replen, other
 
 
-def assign_orders(user):
+def assign_orders(user, order_type):
     pending = r.get(f"pending:{user}")
     if pending:
         return json.loads(pending), False, False
@@ -198,7 +211,13 @@ def assign_orders(user):
     orders = load_orders()
     if not orders:
         return [], False, False
+        
+    # ===== FILTER BY TYPE =====
+    orders = [o for o in orders if o.get("order_type") == order_type]
 
+    if not orders:
+        return [], False, False
+    
     # ===== GROUP =====
     stores, store_lines = {}, {}
 
@@ -763,12 +782,14 @@ def index():
     if user:
         if action == "upload" and user == "admin" and file:
             upload_orders(file)
+            
         elif action == "confirm":
             confirm_orders(user)
             success = True
             orders = []
         else:
-            orders, _, _ = assign_orders(user)
+            order_type = request.form.get("type") or "REPLENISHMENT"
+            orders, _, _ = assign_orders(user, order_type)
         if user and not orders:
             no_orders = True
 
