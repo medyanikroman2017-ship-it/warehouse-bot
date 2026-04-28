@@ -90,7 +90,6 @@ def upload_orders(file, forced_type=None):
     df = pd.read_excel(file)
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("DELETE FROM orders WHERE assigned = FALSE")
     data = []
     for _, row in df.iterrows():
         try:
@@ -103,7 +102,7 @@ def upload_orders(file, forced_type=None):
                 int(row["TOTALORDERLINES"]) if pd.notna(row["TOTALORDERLINES"]) else 0,
                 susr3,
                 str(row["REFERENCENUM"] or ""),
-                forced_type if forced_type else detect_order_type(susr3)
+                order_type = forced_type if forced_type else detect_order_type(susr3)
             ))
         except:
             pass
@@ -267,7 +266,7 @@ def assign_new_lines(user, orders):
 
             break
 
-    return assigned, used
+    return assigned, used, locked_stores
 
 def assign_orders(user, order_type):
     pending = r.get(f"pending:{user}")
