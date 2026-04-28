@@ -809,7 +809,7 @@ def index():
             order_type = request.form.get("type") or "REPLENISHMENT"
             orders, _, _ = assign_orders(user, order_type)
 
-        if user and not orders:
+        if action == "get" and user and not orders:
             no_orders = True
 
     return render_template_string(
