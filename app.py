@@ -86,11 +86,11 @@ def detect_order_type(susr3):
         return "NEW_LINES"
         
 # ===== UPLOAD =====
-def upload_orders(file):
+def upload_orders(file, forced_type=None):
     df = pd.read_excel(file)
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("TRUNCATE TABLE orders")
+    cur.execute("DELETE FROM orders WHERE assigned = FALSE")
     data = []
     for _, row in df.iterrows():
         try:
@@ -103,7 +103,7 @@ def upload_orders(file):
                 int(row["TOTALORDERLINES"]) if pd.notna(row["TOTALORDERLINES"]) else 0,
                 susr3,
                 str(row["REFERENCENUM"] or ""),
-                detect_order_type(susr3)
+                forced_type if forced_type else detect_order_type(susr3)
             ))
         except:
             pass
@@ -703,7 +703,9 @@ HTML = """
   <form method="post" enctype="multipart/form-data">
     <input type="hidden" name="user" value="{{user}}">
     <input type="file" name="file" required>
-    <button name="action" value="upload">📤 Upload Excel</button>
+    
+    <button name="action" value="upload_replen">📤 Upload Replenishment</button>
+    <button name="action" value="upload_new">📤 Upload NEW LINES</button>
   </form>
   {% endif %}
 
@@ -786,16 +788,27 @@ def index():
     success = False
 
     if user:
-        if action == "upload" and user == "admin" and file:
-            upload_orders(file)
-            
+
+        # ===== UPLOAD (2 кнопки) =====
+        if user == "admin" and file:
+
+            if action == "upload_replen":
+                upload_orders(file, forced_type="REPLENISHMENT")
+
+            elif action == "upload_new":
+                upload_orders(file, forced_type="NEW_LINES")
+
+        # ===== CONFIRM =====
         elif action == "confirm":
             confirm_orders(user)
             success = True
             orders = []
+
+        # ===== GET ORDERS =====
         else:
             order_type = request.form.get("type") or "REPLENISHMENT"
             orders, _, _ = assign_orders(user, order_type)
+
         if user and not orders:
             no_orders = True
 
