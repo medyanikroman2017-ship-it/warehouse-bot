@@ -91,21 +91,31 @@ def upload_orders(file, forced_type=None):
     conn = get_conn()
     cur = conn.cursor()
     data = []
+
     for _, row in df.iterrows():
         try:
             susr3 = str(row["SUSR3"] or "")
-            
+
+            # 👉 определяем тип
+            order_type = forced_type if forced_type else detect_order_type(susr3)
+
+            # 👉 создаем уникальный order_id
+            base_id = str(row["ORDERKEY"]).zfill(10)
+            order_id = f"{base_id}_{order_type}"
+
             data.append((
-                str(row["ORDERKEY"]).zfill(10),
+                order_id,
                 str(row["CONSIGNEEKEY"]),
                 int(row["TOTALQTY"]),
                 int(row["TOTALORDERLINES"]) if pd.notna(row["TOTALORDERLINES"]) else 0,
                 susr3,
                 str(row["REFERENCENUM"] or ""),
-                order_type = forced_type if forced_type else detect_order_type(susr3)
+                order_type
             ))
-        except:
-            pass
+
+        except Exception as e:
+            print("UPLOAD ERROR:", e)
+
     execute_values(
         cur,
         "INSERT INTO orders (order_id, store, qty, total_lines, susr3, ref, order_type) VALUES %s",
@@ -113,7 +123,7 @@ def upload_orders(file, forced_type=None):
     )
     conn.commit()
     conn.close()
-
+    
 # ===== LOAD =====
 def load_orders():
     conn = get_conn()
