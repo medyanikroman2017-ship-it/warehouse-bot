@@ -672,7 +672,6 @@ def reset_system():
         conn = get_conn()
         cur = conn.cursor()
 
-        cur.execute("TRUNCATE TABLE orders")
         cur.execute("TRUNCATE TABLE store_locks")
 
         conn.commit()
