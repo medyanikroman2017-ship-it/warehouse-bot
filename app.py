@@ -690,6 +690,12 @@ HTML = """
   <h2>📦 Dystrybucja zamówień</h2>
   <form method="post">
     <input name="user" placeholder="Wpisz ID" required autofocus>
+
+    <select name="type" style="width:100%; padding:15px; font-size:16px; margin-bottom:10px;">
+      <option value="REPLENISHMENT">Replenishment</option>
+      <option value="NEW_LINES">NEW LINES</option>
+    </select>
+
     <button name="action" value="get">Pobierz zamówienia</button>
   </form>
 
