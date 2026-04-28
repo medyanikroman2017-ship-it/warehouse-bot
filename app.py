@@ -218,6 +218,7 @@ def assign_new_lines(user, orders):
 
     assigned = []
     used = set()
+    locked_stores = set()
     current_load = 0
 
     for s in group:
@@ -232,6 +233,8 @@ def assign_new_lines(user, orders):
             
             if not try_lock(s):
                 continue
+
+            locked_stores.add(s)
 
             assigned += stores[s]
             current_load += total
@@ -255,6 +258,8 @@ def assign_new_lines(user, orders):
                 
                 if not try_lock(s):
                     continue
+
+                locked_stores.add(s)
                 
                 assigned += stores[s]
                 current_load += total
@@ -346,7 +351,7 @@ def assign_orders(user, order_type):
         if len(updated) != len(ids):
             conn = get_conn()
             cur = conn.cursor()
-            for s in used:
+            for s in locked_stores:
                 cur.execute("DELETE FROM store_locks WHERE store = %s", (s,))
             conn.commit()
             conn.close()
