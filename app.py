@@ -326,14 +326,17 @@ def assign_orders(user, order_type):
         return [], False, False
 
     # ===== FILTER BY TYPE (СНАЧАЛА!) =====
-    orders = [o for o in orders if o.get("order_type") == order_type]
+    orders = [
+    o for o in orders
+    if (o.get("order_type") or "").strip().upper() == order_type.strip().upper()
+]
 
     if not orders:
         return [], False, False
         
     # ===== NEW LINES MODE =====
     if order_type == "NEW_LINES":
-        assigned, used = assign_new_lines(user, orders)
+        assigned, used, locked_stores = assign_new_lines(user, orders)
 
         if not assigned:
             return [], False, False
