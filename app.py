@@ -673,7 +673,6 @@ def dashboard_data():
 def reset_system():
     user = request.form.get("user") or request.headers.get("X-USER")
 
-    # 🔐 доступ только для admin
     if user != "admin":
         return {"status": "error", "message": "Unauthorized"}, 403
 
@@ -681,14 +680,20 @@ def reset_system():
         conn = get_conn()
         cur = conn.cursor()
 
+        # 🔥 удаляем ВСЕ заказы
+        cur.execute("TRUNCATE TABLE orders RESTART IDENTITY")
+
+        # 🔥 удаляем локи
         cur.execute("TRUNCATE TABLE store_locks")
 
         conn.commit()
         conn.close()
 
-        # очистка Redis pending
+        # 🔥 чистим Redis
         for key in r.keys("pending:*"):
             r.delete(key)
+
+        r.delete(SPLIT_KEY)
 
         return {"status": "ok"}
 
