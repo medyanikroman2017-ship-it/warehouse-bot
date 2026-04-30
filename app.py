@@ -326,6 +326,8 @@ def assign_orders(user, order_type):
         return [], False, False
 
     # ===== FILTER BY TYPE (СНАЧАЛА!) =====
+    order_type = (order_type or "").strip().upper()
+    
     orders = [
     o for o in orders
     if (o.get("order_type") or "").strip().upper() == order_type.strip().upper()
