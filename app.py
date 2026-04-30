@@ -325,30 +325,31 @@ def assign_orders(user, order_type):
     if not orders:
         return [], False, False
 
-    # ===== FILTER BY TYPE (СНАЧАЛА!) =====
+    # ===== FILTER BY TYPE (ФИКС) =====
     order_type = (order_type or "").strip().upper()
-    
+
     orders = [
-    o for o in orders
-    if (o.get("order_type") or "").strip().upper() == order_type.strip().upper()
-]
+        o for o in orders
+        if (o.get("order_type") or "").strip().upper() == order_type
+    ]
 
     if not orders:
         return [], False, False
-        
-    # ===== NEW LINES MODE =====
+
+    # =========================================================
+    # 🚀 NEW LINES (ОТДЕЛЬНО)
+    # =========================================================
     if order_type == "NEW_LINES":
         assigned, used, locked_stores = assign_new_lines(user, orders)
 
         if not assigned:
             return [], False, False
-            
-        # ===== DB UPDATE =====
+
         conn = get_conn()
         cur = conn.cursor()
 
         ids = [o["order"] for o in assigned]
-        
+
         cur.execute("""
             UPDATE orders
             SET assigned_to = %s,
@@ -357,7 +358,7 @@ def assign_orders(user, order_type):
               AND assigned_to IS NULL
             RETURNING order_id
         """, (user, ids))
-         
+
         updated = cur.fetchall()
         conn.commit()
         conn.close()
@@ -372,9 +373,12 @@ def assign_orders(user, order_type):
             return [], False, False
 
         r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
-
         return assigned, False, False
-    
+
+    # =========================================================
+    # 🔥 REPLEN (ТВОЯ ОРИГИНАЛЬНАЯ ЛОГИКА)
+    # =========================================================
+
     # ===== GROUP =====
     stores, store_lines = {}, {}
 
@@ -449,7 +453,7 @@ def assign_orders(user, order_type):
             return False
 
     # =========================
-    # 🎯 WEIGHTED PICK
+    # 🎯 ORIGINAL WEIGHTED PICK
     # =========================
     candidates = []
 
@@ -494,14 +498,10 @@ def assign_orders(user, order_type):
         replen, other = split_replen_and_other(stores[s])
         total_lines = store_lines[s]
 
-        # 🔥 ТОЛЬКО LARGE делим
         if total_lines >= 1200 and replen and other:
-
             assigned += replen
             current_load += sum((o.get("lines") or 0) for o in replen)
-
             r.setex(SPLIT_KEY, SPLIT_TTL, json.dumps(other))
-
         else:
             assigned += stores[s]
             current_load += total_lines
@@ -510,7 +510,7 @@ def assign_orders(user, order_type):
         break
 
     # =========================
-    # ➕ SMALL ADD
+    # ➕ SMALL ADD (ОРИГИНАЛ)
     # =========================
     small_added = 0
 
@@ -538,7 +538,7 @@ def assign_orders(user, order_type):
                 small_added += 1
 
     # =========================
-    # 🆘 ONLY SMALL
+    # 🆘 ONLY SMALL (ОРИГИНАЛ)
     # =========================
     if current_load == 0 and not standard and not large and small:
         for s in small:
@@ -557,9 +557,7 @@ def assign_orders(user, order_type):
     if not assigned:
         return [], False, False
 
-    # =========================================
-    # 🔒 NO DUPLICATES (atomic)
-    # =========================================
+    # ===== DB UPDATE =====
     conn = get_conn()
     cur = conn.cursor()
 
@@ -587,7 +585,6 @@ def assign_orders(user, order_type):
         conn.close()
         return [], False, False
 
-    # ===== REDIS =====
     r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
 
     return assigned, False, False
