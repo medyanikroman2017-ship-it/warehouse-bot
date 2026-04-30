@@ -10,6 +10,9 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 app = Flask(__name__)
 print("🚀 NEW VERSION LOADED:", time.time())
+print("ORDER TYPE:", order_type)
+print("TOTAL ORDERS:", len(orders))
+print("PRIORITY MAP:", priority_map)
 
 # ===== CONFIG =====
 PENDING_TTL = 1200
