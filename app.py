@@ -79,30 +79,23 @@ threading.Thread(target=log_worker, daemon=True).start()
 # ===== TYPE DETECTION =====
 def detect_order_type(susr3):
     susr3 = (susr3 or "").upper()
-
     if "REPLEN" in susr3:
         return "REPLENISHMENT"
     else:
         return "NEW_LINES"
-        
+
 # ===== UPLOAD =====
 def upload_orders(file, forced_type=None):
     df = pd.read_excel(file)
     conn = get_conn()
     cur = conn.cursor()
     data = []
-
     for _, row in df.iterrows():
         try:
             susr3 = str(row["SUSR3"] or "")
-
-            # 👉 определяем тип
             order_type = forced_type if forced_type else detect_order_type(susr3)
-
-            # 👉 создаем уникальный order_id
             base_id = str(row["ORDERKEY"]).zfill(10)
             order_id = f"{base_id}_{order_type}"
-
             data.append((
                 order_id,
                 str(row["CONSIGNEEKEY"]),
@@ -112,10 +105,8 @@ def upload_orders(file, forced_type=None):
                 str(row["REFERENCENUM"] or ""),
                 order_type
             ))
-
         except Exception as e:
             print("UPLOAD ERROR:", e)
-
     execute_values(
         cur,
         "INSERT INTO orders (order_id, store, qty, total_lines, susr3, ref, order_type) VALUES %s",
@@ -123,26 +114,24 @@ def upload_orders(file, forced_type=None):
     )
     conn.commit()
     conn.close()
-    
+
 # ===== LOAD =====
 def load_orders():
     conn = get_conn()
     cur = conn.cursor()
-
     cur.execute("""
         DELETE FROM store_locks
         WHERE locked_at < NOW() - INTERVAL '20 minutes'
     """)
     conn.commit()
-
     cur.execute("""
         SELECT order_id, store, qty, total_lines, susr3, ref, order_type
         FROM orders
         WHERE assigned = FALSE
-        AND (
-            assigned_at IS NULL
-            OR assigned_at < NOW() - INTERVAL '20 minutes'
-        )
+          AND (
+              assigned_at IS NULL
+              OR assigned_at < NOW() - INTERVAL '20 minutes'
+          )
     """)
     rows = cur.fetchall()
     conn.close()
@@ -159,9 +148,7 @@ def load_orders():
         for r in rows
     ]
 
-
 # ===== SPLIT =====
-
 MAX_STORES = 2
 
 def split_replen_and_other(orders):
@@ -184,7 +171,7 @@ def assign_new_lines(user, orders):
         stores.setdefault(s, []).append(o)
         store_lines[s] = store_lines.get(s, 0) + (o.get("lines") or 0)
 
-    # ===== 🔒 LOCK FUNCTION (ВСТАВЛЯЕШЬ ВОТ СЮДА) =====
+    # ===== LOCK FUNCTION =====
     def try_lock(store):
         conn = get_conn()
         cur = conn.cursor()
@@ -218,7 +205,7 @@ def assign_new_lines(user, orders):
             break
 
     if not active_priority:
-        return [], set()
+        return [], set(), set()
 
     group = priority_map[active_priority]
 
@@ -239,12 +226,11 @@ def assign_new_lines(user, orders):
 
         # ===== FIRST STORE =====
         if current_load == 0:
-            
+
             if not try_lock(s):
                 continue
 
             locked_stores.add(s)
-
             assigned += stores[s]
             current_load += total
             used.add(s)
@@ -264,12 +250,9 @@ def assign_new_lines(user, orders):
         else:
 
             if current_load < 200:
-                
                 if not try_lock(s):
                     continue
-
                 locked_stores.add(s)
-                
                 assigned += stores[s]
                 current_load += total
                 used.add(s)
@@ -277,6 +260,7 @@ def assign_new_lines(user, orders):
             break
 
     return assigned, used, locked_stores
+
 
 def assign_orders(user, order_type):
     pending = r.get(f"pending:{user}")
@@ -325,9 +309,8 @@ def assign_orders(user, order_type):
     if not orders:
         return [], False, False
 
-    # ===== FILTER BY TYPE (ФИКС) =====
+    # ===== FILTER BY TYPE =====
     order_type = (order_type or "").strip().upper()
-
     orders = [
         o for o in orders
         if (o.get("order_type") or "").strip().upper() == order_type
@@ -336,15 +319,14 @@ def assign_orders(user, order_type):
     if not orders:
         return [], False, False
 
-    # =========================================================
-    # 🚀 NEW LINES (ОТДЕЛЬНО)
-    # =========================================================
+    # ===== NEW LINES MODE =====
     if order_type == "NEW_LINES":
         assigned, used, locked_stores = assign_new_lines(user, orders)
 
         if not assigned:
             return [], False, False
 
+        # ===== DB UPDATE =====
         conn = get_conn()
         cur = conn.cursor()
 
@@ -373,11 +355,8 @@ def assign_orders(user, order_type):
             return [], False, False
 
         r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
-        return assigned, False, False
 
-    # =========================================================
-    # 🔥 REPLEN (ТВОЯ ОРИГИНАЛЬНАЯ ЛОГИКА)
-    # =========================================================
+        return assigned, False, False
 
     # ===== GROUP =====
     stores, store_lines = {}, {}
@@ -453,7 +432,7 @@ def assign_orders(user, order_type):
             return False
 
     # =========================
-    # 🎯 ORIGINAL WEIGHTED PICK
+    # 🎯 WEIGHTED PICK
     # =========================
     candidates = []
 
@@ -498,10 +477,14 @@ def assign_orders(user, order_type):
         replen, other = split_replen_and_other(stores[s])
         total_lines = store_lines[s]
 
+        # 🔥 ТОЛЬКО LARGE делим
         if total_lines >= 1200 and replen and other:
+
             assigned += replen
             current_load += sum((o.get("lines") or 0) for o in replen)
+
             r.setex(SPLIT_KEY, SPLIT_TTL, json.dumps(other))
+
         else:
             assigned += stores[s]
             current_load += total_lines
@@ -510,7 +493,7 @@ def assign_orders(user, order_type):
         break
 
     # =========================
-    # ➕ SMALL ADD (ОРИГИНАЛ)
+    # ➕ SMALL ADD
     # =========================
     small_added = 0
 
@@ -538,7 +521,7 @@ def assign_orders(user, order_type):
                 small_added += 1
 
     # =========================
-    # 🆘 ONLY SMALL (ОРИГИНАЛ)
+    # 🆘 ONLY SMALL
     # =========================
     if current_load == 0 and not standard and not large and small:
         for s in small:
@@ -557,7 +540,9 @@ def assign_orders(user, order_type):
     if not assigned:
         return [], False, False
 
-    # ===== DB UPDATE =====
+    # =========================================
+    # 🔒 NO DUPLICATES (atomic)
+    # =========================================
     conn = get_conn()
     cur = conn.cursor()
 
@@ -585,25 +570,29 @@ def assign_orders(user, order_type):
         conn.close()
         return [], False, False
 
+    # ===== REDIS =====
     r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
 
     return assigned, False, False
+
 
 # ===== CONFIRM =====
 def confirm_orders(user):
     raw = r.get(f"pending:{user}")
     if not raw:
         return
+
     orders = json.loads(raw)
     conn = get_conn()
     cur = conn.cursor()
+
     ids = [o["order"] for o in orders]
 
     cur.execute("""
         UPDATE orders
         SET assigned = TRUE
         WHERE order_id = ANY(%s)
-        AND assigned_to = %s
+          AND assigned_to = %s
     """, (ids, user))
 
     stores = list(set(o["store"] for o in orders))
@@ -615,25 +604,30 @@ def confirm_orders(user):
 
     conn.commit()
     conn.close()
+
     r.delete(f"pending:{user}")
+
     r.rpush("log_queue", json.dumps({
         "id": f"{user}_{time.time()}",
         "user": user,
         "orders": orders
     }))
 
+
 # ===== DASHBOARD DATA =====
 @app.route("/dashboard_data")
 def dashboard_data():
     conn = get_conn()
     cur = conn.cursor()
+
     cur.execute("""
         SELECT assigned_to, store, total_lines, assigned_at
         FROM orders
         WHERE assigned = FALSE
-        AND assigned_to IS NOT NULL
+          AND assigned_to IS NOT NULL
     """)
     rows = cur.fetchall()
+
     cur.execute("""
         SELECT COUNT(*), COALESCE(SUM(total_lines), 0)
         FROM orders
@@ -670,11 +664,11 @@ def dashboard_data():
         "total_lines": int(total_lines or 0)
     }
 
+
 # ===== RESET SYSTEM =====
 @app.route("/reset", methods=["POST"])
 def reset_system():
     user = request.form.get("user") or request.headers.get("X-USER")
-
     if user != "admin":
         return {"status": "error", "message": "Unauthorized"}, 403
 
@@ -682,25 +676,19 @@ def reset_system():
         conn = get_conn()
         cur = conn.cursor()
 
-        # 🔥 удаляем ВСЕ заказы
         cur.execute("TRUNCATE TABLE orders RESTART IDENTITY")
-
-        # 🔥 удаляем локи
         cur.execute("TRUNCATE TABLE store_locks")
-
         conn.commit()
         conn.close()
 
-        # 🔥 чистим Redis
         for key in r.keys("pending:*"):
             r.delete(key)
-
         r.delete(SPLIT_KEY)
 
         return {"status": "ok"}
-
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
 
 # ===== DASHBOARD UI =====
 @app.route("/dashboard")
@@ -708,232 +696,208 @@ def dashboard():
     return """
 <html>
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body { font-family: Arial; background:#f5f5f5; padding:10px; }
-    .card { background:white; padding:12px; margin-bottom:10px; border-radius:10px; }
-    .big { font-size:20px; font-weight:bold; }
-    .red { background:#ffcccc; }
-    .yellow { background:#fff3cd; }
-    .green { background:#d4edda; }
-    .pending { border: 3px solid red; }
-    button { margin-bottom:10px; padding:10px; font-size:16px; background:#ff4444; color:white; border:none; border-radius:6px; }
-  </style>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body { font-family: Arial; background:#f5f5f5; padding:10px; }
+.card { background:white; padding:12px; margin-bottom:10px; border-radius:10px; }
+.big { font-size:20px; font-weight:bold; }
+.red { background:#ffcccc; }
+.yellow { background:#fff3cd; }
+.green { background:#d4edda; }
+.pending { border: 3px solid red; }
+button { margin-bottom:10px; padding:10px; font-size:16px; background:#ff4444; color:white; border:none; border-radius:6px; }
+</style>
 </head>
 <body>
-  <h2>📊 Dashboard</h2>
-  <button onclick="resetSystem()">🔄 RESET SYSTEM</button>
-  <div id="summary" class="card"></div>
-  <div id="workers"></div>
-  <script>
-    function getColor(lines){
-      if (lines > 450) return "red";
-      if (lines >= 300) return "yellow";
-      return "green";
-    }
-    function formatTime(ts){
-      if (!ts) return "";
-      let d = new Date(ts);
-      return d.toLocaleTimeString();
-    }
+<h2>📊 Dashboard</h2>
+<button onclick="resetSystem()">🔄 RESET SYSTEM</button>
+<div id="summary" class="card"></div>
+<div id="workers"></div>
+<script>
+function getColor(lines){
+    if (lines > 450) return "red";
+    if (lines >= 300) return "yellow";
+    return "green";
+}
+function formatTime(ts){
+    if (!ts) return "";
+    let d = new Date(ts);
+    return d.toLocaleTimeString();
+}
 async function resetSystem() {
     let user = prompt("Введите admin ID:");
-
-    if (!user) {
-        alert("❌ Отменено");
-        return;
-    }
-
+    if (!user) { alert("❌ Отменено"); return; }
     if (!confirm("⚠️ Ты уверен что хочешь удалить ВСЕ заказы?")) return;
-
     let res = await fetch('/reset', {
         method: 'POST',
-        headers: {
-            "Content-Type": "application/x-www-form-urlencoded"
-        },
-        body: new URLSearchParams({
-            user: user
-        })
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ user: user })
     });
-
     let data = await res.json();
-
     if (data.status === "ok") {
         alert("✅ Система очищена");
     } else {
         alert("❌ Ошибка: " + data.message);
     }
-
     load();
-    }
-    async function load() {
-      let res = await fetch('/dashboard_data');
-      let data = await res.json();
-      document.getElementById('summary').innerHTML =
+}
+async function load() {
+    let res = await fetch('/dashboard_data');
+    let data = await res.json();
+    document.getElementById('summary').innerHTML =
         "<div class='big'>Remaining lines: " + data.total_lines + "</div>" +
         "<div>Remaining orders: " + data.total_orders + "</div>";
-      let html = "";
-      for (let w in data.workers) {
+    let html = "";
+    for (let w in data.workers) {
         let u = data.workers[w];
         let color = getColor(u.lines);
         let pendingClass = u.pending ? "pending" : "";
         html += "<div class='card " + color + " " + pendingClass + "'>" +
-          "<b>👤 " + w + "</b><br>" +
-          "Lines: " + u.lines + "<br>" +
-          "Orders: " + u.orders + "<br>" +
-          "Stores: " + u.stores.join(", ") + "<br>" +
-          (u.pending ? "⚠️ NOT CONFIRMED" : "✅ OK") + "<br>" +
-          "⏱ Since: " + formatTime(u.oldest) + "</div>";
-      }
-      document.getElementById('workers').innerHTML = html;
+            "<b>👤 " + w + "</b><br>" +
+            "Lines: " + u.lines + "<br>" +
+            "Orders: " + u.orders + "<br>" +
+            "Stores: " + u.stores.join(", ") + "<br>" +
+            (u.pending ? "⚠️ NOT CONFIRMED" : "✅ OK") + "<br>" +
+            "⏱ Since: " + formatTime(u.oldest) + "</div>";
     }
-    load();
-    setInterval(load, 5000);
-  </script>
+    document.getElementById('workers').innerHTML = html;
+}
+load();
+setInterval(load, 5000);
+</script>
 </body>
 </html>
 """
+
 
 HTML = """
 <!DOCTYPE html>
 <html>
 <head>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <style>
-    body { font-family: Arial; padding: 10px; background: #f5f5f5; }
-    h2 { font-size: 20px; }
-    input { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
-    button { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
-    .order { background: white; padding: 10px; margin-bottom: 8px; border-radius: 8px; }
-    @keyframes blink {
-      0% { background: red; }
-      50% { background: darkred; }
-      100% { background: red; }
-    }
-    .alert {
-      color: white;
-      padding: 12px;
-      font-weight: bold;
-      text-align: center;
-      margin-bottom: 12px;
-      border-radius: 10px;
-      animation: blink 1s infinite;
-      font-size: 16px;
-    }
-    @keyframes shake {
-      0% { transform: translateX(0); }
-      20% { transform: translateX(-6px); }
-      40% { transform: translateX(6px); }
-      60% { transform: translateX(-6px); }
-      80% { transform: translateX(6px); }
-      100% { transform: translateX(0); }
-    }
-    .alert.active {
-      animation: blink 1s infinite, shake 0.4s infinite;
-      background: #ff0000;
-    }
-    .success {
-      background: #28a745;
-      color: white;
-      padding: 12px;
-      font-weight: bold;
-      text-align: center;
-      margin-bottom: 12px;
-      border-radius: 10px;
-      font-size: 16px;
-    }
-  </style>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+body { font-family: Arial; padding: 10px; background: #f5f5f5; }
+h2 { font-size: 20px; }
+input { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
+button { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
+.order { background: white; padding: 10px; margin-bottom: 8px; border-radius: 8px; }
+@keyframes blink {
+    0% { background: red; }
+    50% { background: darkred; }
+    100% { background: red; }
+}
+.alert {
+    color: white; padding: 12px; font-weight: bold; text-align: center;
+    margin-bottom: 12px; border-radius: 10px;
+    animation: blink 1s infinite; font-size: 16px;
+}
+@keyframes shake {
+    0% { transform: translateX(0); }
+    20% { transform: translateX(-6px); }
+    40% { transform: translateX(6px); }
+    60% { transform: translateX(-6px); }
+    80% { transform: translateX(6px); }
+    100% { transform: translateX(0); }
+}
+.alert.active {
+    animation: blink 1s infinite, shake 0.4s infinite;
+    background: #ff0000;
+}
+.success {
+    background: #28a745; color: white; padding: 12px;
+    font-weight: bold; text-align: center; margin-bottom: 12px;
+    border-radius: 10px; font-size: 16px;
+}
+</style>
 </head>
 <body>
-  <h2>📦 Dystrybucja zamówień</h2>
-  <form method="post">
+<h2>📦 Dystrybucja zamówień</h2>
+<form method="post">
     <input name="user" placeholder="Wpisz ID" required autofocus>
-
     <select name="type" style="width:100%; padding:15px; font-size:16px; margin-bottom:10px;">
-      <option value="REPLENISHMENT">Replenishment</option>
-      <option value="NEW_LINES">NEW LINES</option>
+        <option value="REPLENISHMENT">Replenishment</option>
+        <option value="NEW_LINES">NEW LINES</option>
     </select>
-
     <button name="action" value="get">Pobierz zamówienia</button>
-  </form>
+</form>
 
-  {% if user == "admin" %}
-  <form method="post" enctype="multipart/form-data">
+{% if user == "admin" %}
+<form method="post" enctype="multipart/form-data">
     <input type="hidden" name="user" value="{{user}}">
     <input type="file" name="file" required>
-    
     <button name="action" value="upload_replen">📤 Upload Replenishment</button>
     <button name="action" value="upload_new">📤 Upload NEW LINES</button>
-  </form>
-  {% endif %}
+</form>
+{% endif %}
 
-  {% if success %}
-  <div class="success">
+{% if success %}
+<div class="success">
     ✅ Zamówienie zostało potwierdzone
-  </div>
-  {% endif %}
+</div>
+{% endif %}
 
-  {% if orders %}
-  <div class="alert">
+{% if orders %}
+<div class="alert">
     ⚠️ PAMIĘTAJ: MUSISZ POTWIERDZIĆ ZAMÓWIENIE!
-  </div>
-  <h3>👤 {{user}}</h3>
-  <form method="post">
+</div>
+<h3>👤 {{user}}</h3>
+<form method="post">
     <input type="hidden" name="user" value="{{user}}">
     <button name="action" value="confirm">✅ Potwierdź odbiór</button>
-  </form>
-  {% for o in orders %}
-  <div class="order">
+</form>
+{% for o in orders %}
+<div class="order">
     {{o.order}} | {{o.store}} | {{o.qty}} | {{o.susr3}}
-  </div>
-  {% endfor %}
-  {% endif %}
+</div>
+{% endfor %}
+{% endif %}
 
-  {% if no_orders %}
-  <div style="color:gray; margin-top:20px;">
+{% if no_orders %}
+<div style="color:gray; margin-top:20px;">
     ❌ Brak dostępnych zamówień do pobrania
-  </div>
-  {% endif %}
+</div>
+{% endif %}
 
-  <script>
-    let hasOrders = {{ 'true' if orders else 'false' }};
-    let confirmed = {{ 'true' if success else 'false' }};
-    let WARNING_TIME = 2 * 60 * 1000;
-    let triggered = false;
+<script>
+let hasOrders = {{ 'true' if orders else 'false' }};
+let confirmed = {{ 'true' if success else 'false' }};
+let WARNING_TIME = 2 * 60 * 1000;
+let triggered = false;
 
-    if (!hasOrders || confirmed) {
-      console.log("NO WARNING");
-    } else {
-      let startTime = Date.now();
-      let timer = setInterval(() => {
+if (!hasOrders || confirmed) {
+    console.log("NO WARNING");
+} else {
+    let startTime = Date.now();
+    let timer = setInterval(() => {
         if (triggered) return;
         let now = Date.now();
         if (now - startTime > WARNING_TIME) {
-          triggered = true;
-          triggerWarning();
+            triggered = true;
+            triggerWarning();
         }
-      }, 1000);
+    }, 1000);
 
-      function triggerWarning() {
+    function triggerWarning() {
         let alertBox = document.querySelector('.alert');
         if (alertBox) {
-          alertBox.classList.add('active');
+            alertBox.classList.add('active');
         }
         startVibration();
-      }
-
-      function startVibration() {
-        if ("vibrate" in navigator) {
-          setInterval(() => {
-            navigator.vibrate([300, 200, 300, 200, 500]);
-          }, 5000);
-        }
-      }
     }
-  </script>
+
+    function startVibration() {
+        if ("vibrate" in navigator) {
+            setInterval(() => {
+                navigator.vibrate([300, 200, 300, 200, 500]);
+            }, 5000);
+        }
+    }
+}
+</script>
 </body>
 </html>
 """
+
 
 # ===== ROUTE =====
 @app.route("/", methods=["GET", "POST"])
@@ -941,18 +905,17 @@ def index():
     user = request.form.get("user")
     action = request.form.get("action")
     file = request.files.get("file")
+
     orders = []
     no_orders = False
     success = False
 
     if user:
 
-        # ===== UPLOAD (2 кнопки) =====
+        # ===== UPLOAD =====
         if user == "admin" and file:
-
             if action == "upload_replen":
                 upload_orders(file, forced_type="REPLENISHMENT")
-
             elif action == "upload_new":
                 upload_orders(file, forced_type="NEW_LINES")
 
@@ -966,9 +929,8 @@ def index():
         else:
             order_type = request.form.get("type") or "REPLENISHMENT"
             orders, _, _ = assign_orders(user, order_type)
-
-        if action == "get" and user and not orders:
-            no_orders = True
+            if action == "get" and user and not orders:
+                no_orders = True
 
     return render_template_string(
         HTML,
