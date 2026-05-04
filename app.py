@@ -10,9 +10,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 app = Flask(__name__)
 print("🚀 NEW VERSION LOADED:", time.time())
-print("ORDER TYPE:", order_type)
-print("TOTAL ORDERS:", len(orders))
-print("PRIORITY MAP:", priority_map)
+
 
 # ===== CONFIG =====
 PENDING_TTL = 1200
@@ -163,18 +161,20 @@ def split_replen_and_other(orders):
             other.append(o)
     return replen, other
 
+
 # ===== NEW LINES LOGIC =====
 def assign_new_lines(user, orders):
 
     # ===== GROUP =====
-    stores, store_lines = {}, {}
+    stores = {}
+    store_lines = {}
 
     for o in orders:
         s = o["store"]
         stores.setdefault(s, []).append(o)
         store_lines[s] = store_lines.get(s, 0) + (o.get("lines") or 0)
 
-    # ===== LOCK FUNCTION =====
+    # ===== LOCK =====
     def try_lock(store):
         conn = get_conn()
         cur = conn.cursor()
@@ -185,10 +185,10 @@ def assign_new_lines(user, orders):
                 ON CONFLICT (store) DO NOTHING
                 RETURNING store
             """, (store, user))
-            locked = cur.fetchone()
+            ok = cur.fetchone()
             conn.commit()
             conn.close()
-            return locked is not None
+            return ok is not None
         except:
             conn.rollback()
             conn.close()
@@ -200,136 +200,136 @@ def assign_new_lines(user, orders):
         p = next((x for x in PRIORITY_ORDER if s.startswith(x)), "OTHER")
         priority_map.setdefault(p, []).append(s)
 
-    # ===== ONLY 1 PRIORITY =====
-    active_priority = None
-    for p in PRIORITY_ORDER:
-        if p in priority_map and priority_map[p]:
-            active_priority = p
-            break
-
+    active_priority = next((p for p in PRIORITY_ORDER if p in priority_map), None)
     if not active_priority:
         return [], set(), set()
 
     group = priority_map[active_priority]
 
-    # ===== SORT (от меньшего к большему) =====
-    group.sort(key=lambda s: store_lines[s])
+    # ===== CLASSIFY =====
+    large = []
+    medium = []
+    small = []
+
+    for s in group:
+        lines = store_lines[s]
+
+        if lines >= 400:
+            large.append(s)
+        elif lines >= 200:
+            medium.append(s)
+        else:
+            small.append(s)
 
     assigned = []
     used = set()
-    locked_stores = set()
+    locked = set()
     current_load = 0
 
-    for s in group:
+    # =========================
+    # 1. LARGE (>=400)
+    # =========================
+    for s in large:
+        if not try_lock(s):
+            continue
+
+        assigned += stores[s]
+        used.add(s)
+        locked.add(s)
+        return assigned, used, locked
+
+    # =========================
+    # 2. MEDIUM (200–399)
+    # =========================
+    for s in medium:
+        if not try_lock(s):
+            continue
+
+        assigned += stores[s]
+        used.add(s)
+        locked.add(s)
+        return assigned, used, locked
+
+    # =========================
+    # 3. SMALL (<200) → берем до 2
+    # =========================
+    for s in small:
 
         if len(used) >= MAX_STORES:
             break
 
-        total = store_lines[s]
-
-        # ===== FIRST STORE =====
-        if current_load == 0:
-
-            if not try_lock(s):
-                continue
-
-            locked_stores.add(s)
-            assigned += stores[s]
-            current_load += total
-            used.add(s)
-
-            # 👉 если большой — берем 1 и стоп
-            if total >= 400:
-                break
-
-            # 👉 если средний — тоже 1 и стоп
-            if total >= 200:
-                break
-
-            # 👉 если маленький — пробуем взять второй
+        if not try_lock(s):
             continue
 
-        # ===== SECOND STORE =====
-        else:
+        assigned += stores[s]
+        current_load += store_lines[s]
+        used.add(s)
+        locked.add(s)
 
-            if current_load < 200:
-                if not try_lock(s):
-                    continue
-                locked_stores.add(s)
-                assigned += stores[s]
-                current_load += total
-                used.add(s)
-
+        if current_load >= 200:
             break
 
-    return assigned, used, locked_stores
+    return assigned, used, locked
 
 
+# ===== HELPER (RANDOM MIX) =====
+def pick_pool(large, standard, small):
+    pools = []
+
+    if large:
+        pools.append(("large", large, 0.25))
+    if standard:
+        pools.append(("standard", standard, 0.5))
+    if small:
+        pools.append(("small", small, 0.25))
+
+    r_val = random.random()
+    acc = 0
+
+    for _, pool, weight in pools:
+        acc += weight
+        if r_val <= acc:
+            return pool
+
+    return pools[0][1]
+
+
+# ===== MAIN ASSIGN =====
 def assign_orders(user, order_type):
+
     pending = r.get(f"pending:{user}")
     if pending:
         return json.loads(pending), False, False
 
-    # ===== SPLIT QUEUE =====
+    # ===== SPLIT QUEUE (FIXED) =====
     split_raw = r.get(SPLIT_KEY)
     if split_raw:
         batch = json.loads(split_raw)
-        r.delete(SPLIT_KEY)
 
-        r.setex(f"pending:{user}", PENDING_TTL, json.dumps(batch))
-        return batch, False, False
-
-    # ===== FALLBACK =====
-    conn = get_conn()
-    cur = conn.cursor()
-
-    cur.execute("""
-        SELECT order_id, store, qty, total_lines, susr3, ref
-        FROM orders
-        WHERE assigned = FALSE
-          AND assigned_to = %s
-          AND assigned_at > NOW() - INTERVAL '20 minutes'
-    """, (user,))
-
-    rows = cur.fetchall()
-    conn.close()
-
-    if rows:
-        return [
-            {
-                "order": r[0],
-                "store": r[1],
-                "qty": r[2],
-                "lines": r[3],
-                "susr3": r[4] or "",
-                "ref": r[5] or "",
-            }
-            for r in rows
-        ], False, False
+        if batch and (batch[0].get("order_type") or "").upper() == order_type:
+            r.delete(SPLIT_KEY)
+            r.setex(f"pending:{user}", PENDING_TTL, json.dumps(batch))
+            return batch, False, False
+        else:
+            r.delete(SPLIT_KEY)
 
     # ===== LOAD =====
     orders = load_orders()
     if not orders:
         return [], False, False
 
-    # ===== FILTER BY TYPE =====
     order_type = (order_type or "").strip().upper()
-    orders = [
-        o for o in orders
-        if (o.get("order_type") or "").strip().upper() == order_type
-    ]
 
-    if not orders:
-        return [], False, False
-
-    # ===== NEW LINES MODE =====
+    # =========================
+    # 🔵 NEW LINES
+    # =========================
     if order_type == "NEW_LINES":
-        assigned, used, locked_stores = assign_new_lines(user, orders)
+
+        assigned, used, locked = assign_new_lines(user, orders)
 
         if not assigned:
             return [], False, False
 
-        # ===== DB UPDATE =====
         conn = get_conn()
         cur = conn.cursor()
 
@@ -351,17 +351,26 @@ def assign_orders(user, order_type):
         if len(updated) != len(ids):
             conn = get_conn()
             cur = conn.cursor()
-            for s in locked_stores:
+            for s in locked:
                 cur.execute("DELETE FROM store_locks WHERE store = %s", (s,))
             conn.commit()
             conn.close()
             return [], False, False
 
         r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
-
         return assigned, False, False
 
-    # ===== GROUP =====
+    # =========================
+    # 🟢 REPLEN
+    # =========================
+    orders = [
+        o for o in orders
+        if (o.get("order_type") or "").upper() == "REPLENISHMENT"
+    ]
+
+    if not orders:
+        return [], False, False
+
     stores, store_lines = {}, {}
 
     for o in orders:
@@ -369,30 +378,21 @@ def assign_orders(user, order_type):
         stores.setdefault(s, []).append(o)
         store_lines[s] = store_lines.get(s, 0) + (o.get("lines") or 0)
 
-    # ===== PRIORITY MAP =====
     priority_map = {}
     for s in stores:
         p = next((x for x in PRIORITY_ORDER if s.startswith(x)), "OTHER")
         priority_map.setdefault(p, []).append(s)
 
-    # ===== ONLY 1 PRIORITY =====
-    active_priority = None
-    for p in PRIORITY_ORDER:
-        if p in priority_map and priority_map[p]:
-            active_priority = p
-            break
-
+    active_priority = next((p for p in PRIORITY_ORDER if p in priority_map), None)
     if not active_priority:
         return [], False, False
 
     group = priority_map[active_priority]
 
-    # ===== CLASSIFY =====
     small, standard, large = [], [], []
 
     for s in group:
         lines = store_lines[s]
-
         if lines >= 1200:
             large.append(s)
         elif lines >= 200:
@@ -400,21 +400,10 @@ def assign_orders(user, order_type):
         else:
             small.append(s)
 
-    # ===== SORT =====
-    standard.sort(key=lambda s: store_lines[s])
     small.sort(key=lambda s: store_lines[s])
+    standard.sort(key=lambda s: store_lines[s])
     large.sort(key=lambda s: store_lines[s])
 
-    assigned = []
-    used = set()
-    current_load = 0
-
-    TARGET = 400
-    TOLERANCE = 40
-    MIN_LOAD = 300
-    MAX_SMALL_ADDS = 2
-
-    # ===== LOCK =====
     def try_lock(store):
         conn = get_conn()
         cur = conn.cursor()
@@ -425,127 +414,55 @@ def assign_orders(user, order_type):
                 ON CONFLICT (store) DO NOTHING
                 RETURNING store
             """, (store, user))
-            locked = cur.fetchone()
+            ok = cur.fetchone()
             conn.commit()
             conn.close()
-            return locked is not None
+            return ok is not None
         except:
             conn.rollback()
             conn.close()
             return False
 
-    # =========================
-    # 🎯 WEIGHTED PICK
-    # =========================
-    candidates = []
+    pool = pick_pool(large, standard, small)
 
-    if large:
-        candidates.append(("large", 0.15))
-    if standard:
-        candidates.append(("standard", 0.6))
-    if small:
-        candidates.append(("small", 0.25))
+    assigned = []
+    used = set()
+    current_load = 0
 
-    def pick_type():
-        total = sum(w for _, w in candidates)
-        r_val = random.uniform(0, total)
-        upto = 0
-        for t, w in candidates:
-            if upto + w >= r_val:
-                return t
-            upto += w
-
-    picked_type = pick_type()
-
-    # ===== SELECT POOL =====
-    if picked_type == "large":
-        pool = large
-    elif picked_type == "standard":
-        pool = standard
-    else:
-        if current_load == 0 and standard:
-            pool = standard
-        else:
-            pool = small
-
-    # ===== PICK STORE =====
     for s in pool:
-
-        if len(used) >= MAX_STORES:
-            break
 
         if not try_lock(s):
             continue
 
         replen, other = split_replen_and_other(stores[s])
-        total_lines = store_lines[s]
+        total = store_lines[s]
 
-        # 🔥 ТОЛЬКО LARGE делим
-        if total_lines >= 1200 and replen and other:
-
+        if total >= 1200 and replen and other:
             assigned += replen
-            current_load += sum((o.get("lines") or 0) for o in replen)
-
+            current_load += sum(o["lines"] for o in replen)
             r.setex(SPLIT_KEY, SPLIT_TTL, json.dumps(other))
-
         else:
             assigned += stores[s]
-            current_load += total_lines
+            current_load += total
 
         used.add(s)
         break
 
-    # =========================
-    # ➕ SMALL ADD
-    # =========================
-    small_added = 0
+    for s in small:
+        if s in used:
+            continue
+        if current_load >= 400:
+            break
+        if not try_lock(s):
+            continue
 
-    if current_load > 0:
-        for s in small:
-            if s in used:
-                continue
+        assigned += stores[s]
+        current_load += store_lines[s]
+        used.add(s)
 
-            if len(used) >= MAX_STORES:
-                break
-
-            if current_load >= TARGET:
-                break
-
-            if current_load >= MIN_LOAD and small_added >= 1:
-                break
-
-            if small_added >= MAX_SMALL_ADDS:
-                break
-
-            if try_lock(s):
-                assigned += stores[s]
-                current_load += store_lines[s]
-                used.add(s)
-                small_added += 1
-
-    # =========================
-    # 🆘 ONLY SMALL
-    # =========================
-    if current_load == 0 and not standard and not large and small:
-        for s in small:
-            if len(used) >= MAX_STORES:
-                break
-
-            if try_lock(s):
-                assigned += stores[s]
-                current_load += store_lines[s]
-                used.add(s)
-
-                if current_load >= TARGET - TOLERANCE:
-                    break
-
-    # ===== CHECK =====
     if not assigned:
         return [], False, False
 
-    # =========================================
-    # 🔒 NO DUPLICATES (atomic)
-    # =========================================
     conn = get_conn()
     cur = conn.cursor()
 
@@ -573,9 +490,7 @@ def assign_orders(user, order_type):
         conn.close()
         return [], False, False
 
-    # ===== REDIS =====
     r.setex(f"pending:{user}", PENDING_TTL, json.dumps(assigned))
-
     return assigned, False, False
 
 
