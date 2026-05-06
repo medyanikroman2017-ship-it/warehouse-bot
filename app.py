@@ -66,6 +66,7 @@ def log_worker():
                         o["store"],
                         o["ref"],
                         time.strftime("%Y-%m-%d %H:%M:%S")
+                        data.get("status", "CONFIRMED")
                     ])
                 sheet.append_rows(rows)
                 r.sadd("logged_ids", data.get("id"))
