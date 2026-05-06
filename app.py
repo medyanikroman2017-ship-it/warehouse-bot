@@ -851,11 +851,18 @@ def index():
 
         # ===== GET ORDERS =====
         else:
-            order_type = request.form.get("type") or "REPLENISHMENT"
-            orders, _, _ = assign_orders(user, order_type)
-            if action == "get" and user and not orders:
-                no_orders = True
 
+            # ❌ admin не получает заказы
+            if user == "admin":
+                orders = []
+
+            else:
+                order_type = request.form.get("type") or "REPLENISHMENT"
+                orders, _, _ = assign_orders(user, order_type)
+
+                if action == "get" and user and not orders:
+                    no_orders = True
+                               
     return render_template_string(
         HTML,
         orders=orders,
