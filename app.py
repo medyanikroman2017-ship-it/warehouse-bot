@@ -770,6 +770,34 @@ button { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
     <input type="hidden" name="user" value="{{user}}">
     <button name="action" value="confirm">✅ Potwierdź odbiór</button>
 </form>
+
+<button type="button" onclick="toggleHandover()">
+    🔄 Dokończenie zamówienia
+</button>
+
+<div id="handover-box" style="display:none; margin-top:10px;">
+
+  <form method="post">
+
+    <input type="hidden" name="user" value="{{user}}">
+    <input type="hidden" name="action" value="handover">
+
+    {% for i in range(14) %}
+      <input
+        name="handover{{i}}"
+        placeholder="Scan order"
+        style="margin-bottom:5px;"
+      >
+    {% endfor %}
+
+    <button type="submit">
+      📤 Wyślij
+    </button>
+
+  </form>
+
+</div>
+
 {% for o in orders %}
 <div class="order">
     {{o.order}} | {{o.store}} | {{o.qty}} | {{o.susr3}}
@@ -784,6 +812,18 @@ button { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
 {% endif %}
 
 <script>
+
+function toggleHandover() {
+
+    let box = document.getElementById("handover-box");
+
+    if (box.style.display === "none") {
+        box.style.display = "block";
+    } else {
+        box.style.display = "none";
+    }
+}
+
 let hasOrders = {{ 'true' if orders else 'false' }};
 let confirmed = {{ 'true' if success else 'false' }};
 let WARNING_TIME = 2 * 60 * 1000;
