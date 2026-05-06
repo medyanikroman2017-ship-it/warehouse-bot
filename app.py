@@ -164,7 +164,13 @@ def split_replen_and_other(orders):
 
 # ===== NEW LINES LOGIC =====
 def assign_new_lines(user, orders):
-
+    
+    # ===== ONLY NEW_LINES ORDERS =====
+    orders = [
+        o for o in orders
+        if (o.get("order_type") or "").upper() == "NEW_LINES"
+    ]
+    
     # ===== GROUP =====
     stores = {}
     store_lines = {}
