@@ -62,10 +62,10 @@ def log_worker():
                 for o in data["orders"]:
                     rows.append([
                         data["user"],
-                        o["order"],
-                        o["store"],
-                        o["ref"],
-                        time.strftime("%Y-%m-%d %H:%M:%S")
+                        o.get("order", ""),
+                        o.get("store", ""),
+                        o.get("ref", ""),
+                        time.strftime("%Y-%m-%d %H:%M:%S"),
                         data.get("status", "CONFIRMED")
                     ])
                 sheet.append_rows(rows)
