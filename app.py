@@ -275,8 +275,7 @@ def assign_new_lines(user, orders):
 
         if current_load >= 200:
             break
-                if current_load >= 200:
-            break
+            
 
         # ===== SUCCESS =====
         if assigned:
