@@ -300,24 +300,23 @@ def assign_new_lines(user, orders):
 
 # ===== HELPER (RANDOM MIX) =====
 def pick_pool(large, standard, small):
+
     pools = []
 
+    # ===== MIX =====
     if large:
-        pools.append(("large", large, 0.25))
+        pools.extend(large)
+
     if standard:
-        pools.append(("standard", standard, 0.5))
+        pools.extend(standard)
+
     if small:
-        pools.append(("small", small, 0.25))
+        pools.extend(small)
 
-    r_val = random.random()
-    acc = 0
+    # ===== RANDOMIZE =====
+    random.shuffle(pools)
 
-    for _, pool, weight in pools:
-        acc += weight
-        if r_val <= acc:
-            return pool
-
-    return pools[0][1]
+    return pools
 
 
 # ===== MAIN ASSIGN =====
