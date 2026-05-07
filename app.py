@@ -896,6 +896,32 @@ def index():
             success = True
             orders = []
 
+        # ===== HANDOVER =====
+        elif action == "handover":
+
+            scanned = []
+
+            for i in range(14):
+
+                order_id = request.form.get(f"handover{i}")
+
+                if order_id:
+
+                    scanned.append({
+                        "order": order_id.strip(),
+                        "store": "",
+                        "ref": ""
+                    })
+
+            if scanned:
+
+                r.rpush("log_queue", json.dumps({
+                    "id": f"handover_{user}_{time.time()}",
+                    "user": user,
+                    "status": "DOKONCZENIE",
+                    "orders": scanned
+                }))        
+        
         # ===== GET ORDERS =====
         else:
 
