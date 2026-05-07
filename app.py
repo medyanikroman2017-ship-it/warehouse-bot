@@ -746,6 +746,39 @@ button { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
     <button name="action" value="get">Pobierz zamówienia</button>
 </form>
 
+<button type="button" onclick="toggleHandover()">
+    🔄 Dokończenie zamówienia
+</button>
+
+<div id="handover-box" style="display:none; margin-top:10px;">
+
+    <form method="post">
+
+        <input
+            name="user"
+            placeholder="Wpisz ID"
+            required
+            style="margin-bottom:10px;"
+        >
+
+        <input type="hidden" name="action" value="handover">
+
+        {% for i in range(14) %}
+        <input
+            name="handover{{i}}"
+            placeholder="Scan order"
+            style="margin-bottom:5px;"
+        >
+        {% endfor %}
+
+        <button type="submit">
+            📤 Wyślij
+        </button>
+
+    </form>
+
+</div>
+
 {% if user == "admin" %}
 <form method="post" enctype="multipart/form-data">
     <input type="hidden" name="user" value="{{user}}">
@@ -770,33 +803,6 @@ button { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
     <input type="hidden" name="user" value="{{user}}">
     <button name="action" value="confirm">✅ Potwierdź odbiór</button>
 </form>
-
-<button type="button" onclick="toggleHandover()">
-    🔄 Dokończenie zamówienia
-</button>
-
-<div id="handover-box" style="display:none; margin-top:10px;">
-
-  <form method="post">
-
-    <input type="hidden" name="user" value="{{user}}">
-    <input type="hidden" name="action" value="handover">
-
-    {% for i in range(14) %}
-      <input
-        name="handover{{i}}"
-        placeholder="Scan order"
-        style="margin-bottom:5px;"
-      >
-    {% endfor %}
-
-    <button type="submit">
-      📤 Wyślij
-    </button>
-
-  </form>
-
-</div>
 
 {% for o in orders %}
 <div class="order">
