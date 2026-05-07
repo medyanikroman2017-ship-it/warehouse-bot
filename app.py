@@ -165,13 +165,13 @@ def split_replen_and_other(orders):
 
 # ===== NEW LINES LOGIC =====
 def assign_new_lines(user, orders):
-    
+
     # ===== ONLY NEW_LINES ORDERS =====
     orders = [
         o for o in orders
         if (o.get("order_type") or "").upper() == "NEW_LINES"
     ]
-    
+
     # ===== GROUP =====
     stores = {}
     store_lines = {}
@@ -192,10 +192,14 @@ def assign_new_lines(user, orders):
                 ON CONFLICT (store) DO NOTHING
                 RETURNING store
             """, (store, user))
+
             ok = cur.fetchone()
+
             conn.commit()
             conn.close()
+
             return ok is not None
+
         except:
             conn.rollback()
             conn.close()
@@ -203,6 +207,7 @@ def assign_new_lines(user, orders):
 
     # ===== PRIORITY =====
     priority_map = {}
+
     for s in stores:
         p = next((x for x in PRIORITY_ORDER if s.startswith(x)), "OTHER")
         priority_map.setdefault(p, []).append(s)
@@ -215,73 +220,83 @@ def assign_new_lines(user, orders):
 
     if not groups:
         return [], set(), set()
-        
+
     for group in groups:
 
         large = []
         medium = []
         small = []
 
+        assigned = []
+        used = set()
+        locked = set()
+        current_load = 0
+
         for s in group:
+
             lines = store_lines[s]
 
             if lines >= 400:
                 large.append(s)
+
             elif lines >= 200:
                 medium.append(s)
+
             else:
                 small.append(s)
 
+        # =========================
+        # 1. LARGE (>=400)
+        # =========================
+        for s in large:
 
-    # =========================
-    # 1. LARGE (>=400)
-    # =========================
-    for s in large:
-        if not try_lock(s):
-            continue
+            if not try_lock(s):
+                continue
 
-        assigned += stores[s]
-        used.add(s)
-        locked.add(s)
-        return assigned, used, locked
+            assigned += stores[s]
+            used.add(s)
+            locked.add(s)
 
-    # =========================
-    # 2. MEDIUM (200–399)
-    # =========================
-    for s in medium:
-        if not try_lock(s):
-            continue
+            return assigned, used, locked
 
-        assigned += stores[s]
-        used.add(s)
-        locked.add(s)
-        return assigned, used, locked
+        # =========================
+        # 2. MEDIUM (200–399)
+        # =========================
+        for s in medium:
 
-    # =========================
-    # 3. SMALL (<200) → берем до 2
-    # =========================
-    for s in small:
+            if not try_lock(s):
+                continue
 
-        if len(used) >= MAX_STORES:
-            break
+            assigned += stores[s]
+            used.add(s)
+            locked.add(s)
 
-        if not try_lock(s):
-            continue
+            return assigned, used, locked
 
-        assigned += stores[s]
-        current_load += store_lines[s]
-        used.add(s)
-        locked.add(s)
+        # =========================
+        # 3. SMALL (<200) → берем до 2
+        # =========================
+        for s in small:
 
-        if current_load >= 200:
-            break
-            
+            if len(used) >= MAX_STORES:
+                break
+
+            if not try_lock(s):
+                continue
+
+            assigned += stores[s]
+            current_load += store_lines[s]
+            used.add(s)
+            locked.add(s)
+
+            if current_load >= 200:
+                break
 
         # ===== SUCCESS =====
         if assigned:
             return assigned, used, locked
 
-return [], set(), set()    
+    return [], set(), set()   
 
 # ===== HELPER (RANDOM MIX) =====
 def pick_pool(large, standard, small):
