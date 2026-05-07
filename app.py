@@ -207,31 +207,31 @@ def assign_new_lines(user, orders):
         p = next((x for x in PRIORITY_ORDER if s.startswith(x)), "OTHER")
         priority_map.setdefault(p, []).append(s)
 
-    active_priority = next((p for p in PRIORITY_ORDER if p in priority_map), None)
-    if not active_priority:
+    groups = []
+
+    for p in PRIORITY_ORDER:
+        if p in priority_map:
+            groups.append(priority_map[p])
+
+    if not groups:
         return [], set(), set()
+        
+    for group in groups:
 
-    group = priority_map[active_priority]
+        large = []
+        medium = []
+        small = []
 
-    # ===== CLASSIFY =====
-    large = []
-    medium = []
-    small = []
+        for s in group:
+            lines = store_lines[s]
 
-    for s in group:
-        lines = store_lines[s]
+            if lines >= 400:
+                large.append(s)
+            elif lines >= 200:
+                medium.append(s)
+            else:
+                small.append(s)
 
-        if lines >= 400:
-            large.append(s)
-        elif lines >= 200:
-            medium.append(s)
-        else:
-            small.append(s)
-
-    assigned = []
-    used = set()
-    locked = set()
-    current_load = 0
 
     # =========================
     # 1. LARGE (>=400)
@@ -275,9 +275,14 @@ def assign_new_lines(user, orders):
 
         if current_load >= 200:
             break
+                if current_load >= 200:
+            break
 
-    return assigned, used, locked
+        # ===== SUCCESS =====
+        if assigned:
+            return assigned, used, locked
 
+return [], set(), set()    
 
 # ===== HELPER (RANDOM MIX) =====
 def pick_pool(large, standard, small):
@@ -390,22 +395,27 @@ def assign_orders(user, order_type):
         p = next((x for x in PRIORITY_ORDER if s.startswith(x)), "OTHER")
         priority_map.setdefault(p, []).append(s)
 
-    active_priority = next((p for p in PRIORITY_ORDER if p in priority_map), None)
-    if not active_priority:
+    groups = []
+
+    for p in PRIORITY_ORDER:
+        if p in priority_map:
+            groups.append(priority_map[p])
+
+    if not groups:
         return [], False, False
+        
+    for group in groups:
+        
+        small, standard, large = [], [], []
 
-    group = priority_map[active_priority]
-
-    small, standard, large = [], [], []
-
-    for s in group:
-        lines = store_lines[s]
-        if lines >= 1200:
-            large.append(s)
-        elif lines >= 200:
-            standard.append(s)
-        else:
-            small.append(s)
+        for s in group:
+            lines = store_lines[s]
+            if lines >= 1200:
+                large.append(s)
+            elif lines >= 200:
+                standard.append(s)
+            else:
+                small.append(s)
 
     small.sort(key=lambda s: store_lines[s])
     standard.sort(key=lambda s: store_lines[s])
@@ -466,6 +476,10 @@ def assign_orders(user, order_type):
         assigned += stores[s]
         current_load += store_lines[s]
         used.add(s)
+
+    # ===== SUCCESS =====
+    if assigned:
+        break    
 
     if not assigned:
         return [], False, False
