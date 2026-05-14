@@ -87,32 +87,69 @@ def detect_order_type(susr3):
 
 # ===== UPLOAD =====
 def upload_orders(file, forced_type=None):
-    df = pd.read_excel(file)
+
+    df = pd.read_excel(
+        file,
+        engine="openpyxl",
+        dtype=str
+    )
+
     conn = get_conn()
     cur = conn.cursor()
+
     data = []
+
     for _, row in df.iterrows():
+
         try:
+
             susr3 = str(row["SUSR3"] or "")
-            order_type = forced_type if forced_type else detect_order_type(susr3)
+
+            order_type = (
+                forced_type
+                if forced_type
+                else detect_order_type(susr3)
+            )
+
             base_id = str(row["ORDERKEY"]).zfill(10)
+
             order_id = f"{base_id}_{order_type}"
+
+            qty = int(float(row["TOTALQTY"] or 0))
+            lines = int(float(row["TOTALORDERLINES"] or 0))
+
             data.append((
                 order_id,
                 str(row["CONSIGNEEKEY"]),
-                int(row["TOTALQTY"]),
-                int(row["TOTALORDERLINES"]) if pd.notna(row["TOTALORDERLINES"]) else 0,
+                qty,
+                lines,
                 susr3,
                 str(row["REFERENCENUM"] or ""),
                 order_type
             ))
+
         except Exception as e:
+
             print("UPLOAD ERROR:", e)
+
     execute_values(
         cur,
-        "INSERT INTO orders (order_id, store, qty, total_lines, susr3, ref, order_type) VALUES %s",
+        """
+        INSERT INTO orders
+        (
+            order_id,
+            store,
+            qty,
+            total_lines,
+            susr3,
+            ref,
+            order_type
+        )
+        VALUES %s
+        """,
         data
     )
+
     conn.commit()
     conn.close()
 
