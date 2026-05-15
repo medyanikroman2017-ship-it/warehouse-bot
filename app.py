@@ -167,7 +167,7 @@ def load_orders():
         FROM orders
         WHERE assigned = FALSE
           AND (
-              assigned_at IS NULL
+              assigned_to IS NULL
               OR assigned_at < NOW() - INTERVAL '20 minutes'
           )
     """)
@@ -385,7 +385,10 @@ def assign_orders(user, order_type):
         SET assigned_to = %s,
             assigned_at = NOW()
         WHERE order_id = ANY(%s)
-        AND assigned_to IS NULL
+        AND (
+            assigned_to IS NULL
+            OR assigned_at < NOW() - INTERVAL '20 minutes'
+        )
         RETURNING order_id
     """, (user, ids))
 
