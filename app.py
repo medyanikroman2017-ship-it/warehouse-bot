@@ -159,7 +159,7 @@ def load_orders():
     cur = conn.cursor()
     cur.execute("""
         DELETE FROM store_locks
-        WHERE locked_at < NOW() - INTERVAL '20 minutes'
+        WHERE locked_at < NOW() - INTERVAL '40 minutes'
     """)
     conn.commit()
     cur.execute("""
@@ -168,7 +168,7 @@ def load_orders():
         WHERE assigned = FALSE
           AND (
               assigned_to IS NULL
-              OR assigned_at < NOW() - INTERVAL '20 minutes'
+              OR assigned_at < NOW() - INTERVAL '40 minutes'
           )
     """)
     rows = cur.fetchall()
@@ -387,7 +387,7 @@ def assign_orders(user, order_type):
         WHERE order_id = ANY(%s)
         AND (
             assigned_to IS NULL
-            OR assigned_at < NOW() - INTERVAL '20 minutes'
+            OR assigned_at < NOW() - INTERVAL '40 minutes'
         )
         RETURNING order_id
     """, (user, ids))
@@ -759,7 +759,7 @@ function toggleHandover() {
 
 let hasOrders = {{ 'true' if orders else 'false' }};
 let confirmed = {{ 'true' if success else 'false' }};
-let WARNING_TIME = 2 * 60 * 1000;
+let WARNING_TIME = 7 * 60 * 1000;
 let triggered = false;
 
 if (!hasOrders || confirmed) {
