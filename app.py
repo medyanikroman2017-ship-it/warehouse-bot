@@ -759,7 +759,7 @@ button { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
 
 {% for o in orders %}
 <div class="order">
-    {{o.order}} | {{o.store}} | {{o.qty}} | {{o.susr3}}
+    {{o.order.split('_')[0]}} | {{o.store}} | {{o.qty}} | {{o.susr3}}
 </div>
 {% endfor %}
 {% endif %}
