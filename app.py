@@ -705,7 +705,7 @@ button { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
 
 <div id="handover-box" style="display:none; margin-top:10px;">
 
-    <form method="post">
+    <form method="post" onkeydown="return event.key != 'Enter';">
 
         <input
             name="user"
