@@ -254,6 +254,32 @@ def assign_orders(user, order_type):
 
         if batch:
 
+            ids = [o["order"] for o in batch]
+
+            conn = get_conn()
+            cur = conn.cursor()
+
+            cur.execute("""
+                UPDATE orders
+                SET assigned_to = %s,
+                    assigned_at = NOW()
+                WHERE order_id = ANY(%s)
+                AND assigned_to IS NULL
+                RETURNING order_id
+            """, (user, ids))
+
+            updated = cur.fetchall()
+
+            conn.commit()
+            conn.close()
+
+            # already taken by someone else
+            if len(updated) != len(ids):
+
+                r.delete(SPLIT_KEY)
+
+                return [], False, False
+
             r.delete(SPLIT_KEY)
 
             r.setex(
