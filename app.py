@@ -690,7 +690,7 @@ button { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
 </head>
 <body>
 <h2>📦 Dystrybucja zamówień</h2>
-<form method="post">
+<form method="post" onkeydown="return event.key != 'Enter';">
     <input name="user" placeholder="Wpisz ID" required autofocus>
     <select name="type" style="width:100%; padding:15px; font-size:16px; margin-bottom:10px;">
         <option value="REPLENISHMENT">Replenishment</option>
