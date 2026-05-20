@@ -37,14 +37,50 @@ def get_conn():
 
 # ===== GOOGLE SHEETS =====
 def connect_sheet():
+
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive",
     ]
+
     creds = json.loads(os.environ.get("GOOGLE_CREDENTIALS"))
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds, scope)
+
+    creds = ServiceAccountCredentials.from_json_keyfile_dict(
+        creds,
+        scope
+    )
+
     client = gspread.authorize(creds)
-    return client.open_by_key("1dtSO224vSpxaR5Jm3wNQ09SiMjSjLGkgL1C4lRfg7YM")
+
+    return client.open_by_key(
+        "1dtSO224vSpxaR5Jm3wNQ09SiMjSjLGkgL1C4lRfg7YM"
+    )
+
+
+def get_valid_users():
+
+    try:
+
+        sheet = connect_sheet().worksheet("HC")
+
+        values = sheet.col_values(1)
+
+        users = set()
+
+        for v in values[1:]:
+
+            v = str(v).strip()
+
+            if v:
+                users.add(v)
+
+        return users
+
+    except Exception as e:
+
+        print("HC LOAD ERROR:", e)
+
+        return set()
 
 # ===== LOG WORKER =====
 def log_worker():
@@ -764,6 +800,19 @@ button { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
 {% endfor %}
 {% endif %}
 
+{% if invalid_user %}
+<div style="
+    background:#ffcccc;
+    color:#990000;
+    padding:12px;
+    border-radius:8px;
+    margin-top:20px;
+    font-weight:bold;
+">
+    ❌ Nieprawidłowy ID użytkownika
+</div>
+{% endif %}
+
 {% if no_orders %}
 <div style="color:gray; margin-top:20px;">
     ❌ Brak dostępnych zamówień do pobrania
@@ -826,6 +875,7 @@ if (!hasOrders || confirmed) {
 # ===== ROUTE =====
 @app.route("/", methods=["GET", "POST"])
 def index():
+
     user = request.form.get("user")
     action = request.form.get("action")
     file = request.files.get("file")
@@ -835,6 +885,19 @@ def index():
     success = False
 
     if user:
+
+        valid_users = get_valid_users()
+
+        if user != "admin" and user not in valid_users:
+
+            return render_template_string(
+                HTML,
+                orders=[],
+                user=user,
+                no_orders=False,
+                success=False,
+                invalid_user=True
+            )
 
         # ===== UPLOAD =====
         if user == "admin" and file:
