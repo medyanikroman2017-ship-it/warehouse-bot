@@ -490,6 +490,41 @@ def assign_orders(user, order_type):
     )
 
     return assigned, False, False
+
+# ===== MY ORDERS =====
+def get_user_orders(user):
+
+    conn = get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT
+            order_id,
+            store,
+            qty,
+            total_lines,
+            susr3
+        FROM orders
+        WHERE assigned_to = %s
+        AND assigned_at > NOW() - INTERVAL '1 hour'
+        ORDER BY assigned_at DESC
+    """, (user,))
+
+    rows = cur.fetchall()
+
+    conn.close()
+
+    return [
+        {
+            "order": r[0],
+            "store": r[1],
+            "qty": r[2],
+            "lines": r[3],
+            "susr3": r[4] or ""
+        }
+        for r in rows
+    ]
+
 # ===== CONFIRM =====
 def confirm_orders(user):
     raw = r.get(f"pending:{user}")
@@ -739,6 +774,35 @@ button { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
     🔄 Dokończenie zamówienia
 </button>
 
+<button type="button" onclick="toggleMyOrders()">
+    📋 Moje zamówienia
+</button>
+
+<div id="myorders-box" style="display:none; margin-top:10px;">
+
+<form method="post">
+
+    <input
+        name="user"
+        placeholder="Wpisz ID"
+        required
+        style="margin-bottom:10px;"
+    >
+
+    <input
+        type="hidden"
+        name="action"
+        value="my_orders"
+    >
+
+    <button type="submit">
+        📋 Pokaż moje zamówienia
+    </button>
+
+</form>
+
+</div>
+
 <div id="handover-box" style="display:none; margin-top:10px;">
 
     <form method="post" onkeydown="return event.key != 'Enter';">
@@ -829,6 +893,21 @@ function toggleHandover() {
         box.style.display = "block";
     } else {
         box.style.display = "none";
+    }
+}
+
+function toggleMyOrders() {
+
+    let box = document.getElementById("myorders-box");
+
+    if (box.style.display === "none") {
+
+        box.style.display = "block";
+
+    } else {
+
+        box.style.display = "none";
+
     }
 }
 
@@ -938,6 +1017,11 @@ def index():
                     "status": "DOKONCZENIE",
                     "orders": scanned
                 }))        
+
+        # ===== MY ORDERS =====
+        elif action == "my_orders":
+
+            orders = get_user_orders(user)        
         
         # ===== GET ORDERS =====
         else:
