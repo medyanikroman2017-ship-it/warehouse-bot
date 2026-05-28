@@ -921,7 +921,7 @@ function toggleMyOrders() {
 
 let hasOrders = {{ 'true' if orders else 'false' }};
 let confirmed = {{ 'true' if success else 'false' }};
-let WARNING_TIME = 7 * 60 * 1000;
+let WARNING_TIME = 2 * 60 * 1000;
 let triggered = false;
 
 if (!hasOrders || confirmed) {
