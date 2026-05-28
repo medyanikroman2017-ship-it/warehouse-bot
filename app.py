@@ -845,6 +845,7 @@ button { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
     <input type="file" name="file" required>
     <button name="action" value="upload_replen">📤 Upload Replenishment</button>
     <button name="action" value="upload_new">📤 Upload NEW LINES</button>
+    <button name="action" value="upload_top">📤 Upload TOP STORE</button>
 </form>
 {% endif %}
 
@@ -992,7 +993,9 @@ def index():
                 upload_orders(file, forced_type="REPLENISHMENT")
             elif action == "upload_new":
                 upload_orders(file, forced_type="NEW_LINES")
-
+            elif action == "upload_top":
+                upload_orders(file, forced_type="TOP_STORE")
+                
         # ===== CONFIRM =====
         elif action == "confirm":
             confirm_orders(user)
