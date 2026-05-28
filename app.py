@@ -115,9 +115,15 @@ threading.Thread(target=log_worker, daemon=True).start()
 
 # ===== TYPE DETECTION =====
 def detect_order_type(susr3):
+
     susr3 = (susr3 or "").upper()
-    if "REPLEN" in susr3:
+
+    if "TOP STORE" in susr3:
+        return "TOP_STORE"
+
+    elif "REPLEN" in susr3:
         return "REPLENISHMENT"
+
     else:
         return "NEW_LINES"
 
@@ -402,7 +408,7 @@ def assign_orders(user, order_type):
         # =====================================
         if (
             order_type == "REPLENISHMENT"
-            and total_lines >= 1200
+            and total_lines >= 1500
         ):
 
             replen, other = split_replen_and_other(store_orders)
@@ -766,6 +772,7 @@ button { width: 100%; padding: 15px; font-size: 18px; margin-bottom: 10px; }
     <select name="type" style="width:100%; padding:15px; font-size:16px; margin-bottom:10px;">
         <option value="REPLENISHMENT">Replenishment</option>
         <option value="NEW_LINES">NEW LINES</option>
+        <option value="TOP_STORE">TOP STORE</option>
     </select>
     <button name="action" value="get">Pobierz zamówienia</button>
 </form>
