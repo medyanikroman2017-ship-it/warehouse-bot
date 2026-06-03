@@ -38,25 +38,39 @@ def get_conn():
 # ===== GOOGLE SHEETS =====
 def connect_sheet():
 
+    print("GSHEET STEP 1")
+
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive",
     ]
 
+    print("GSHEET STEP 2")
+
     creds = json.loads(
         os.environ.get("GOOGLE_CREDENTIALS")
     )
+
+    print("GSHEET STEP 3")
 
     creds = ServiceAccountCredentials.from_json_keyfile_dict(
         creds,
         scope
     )
 
+    print("GSHEET STEP 4")
+
     client = gspread.authorize(creds)
 
-    return client.open_by_key(
+    print("GSHEET STEP 5")
+
+    sheet = client.open_by_key(
         "1dtSO224vSpxaR5Jm3wNQ09SiMjSjLGkgL1C4lRfg7YM"
     )
+
+    print("GSHEET STEP 6")
+
+    return sheet
 
 
 def get_valid_users():
