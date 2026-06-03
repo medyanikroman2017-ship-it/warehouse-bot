@@ -43,7 +43,9 @@ def connect_sheet():
         "https://www.googleapis.com/auth/drive",
     ]
 
-    creds = json.loads(os.environ.get("GOOGLE_CREDENTIALS"))
+    creds = json.loads(
+        os.environ.get("GOOGLE_CREDENTIALS")
+    )
 
     creds = ServiceAccountCredentials.from_json_keyfile_dict(
         creds,
@@ -61,9 +63,15 @@ def get_valid_users():
 
     try:
 
+        print("HC LOAD START")
+
         sheet = connect_sheet().worksheet("HC")
 
+        print("HC SHEET OPENED")
+
         values = sheet.col_values(1)
+
+        print("HC ROWS:", len(values))
 
         users = set()
 
@@ -74,23 +82,34 @@ def get_valid_users():
             if v:
                 users.add(v)
 
+        print("HC USERS LOADED:", len(users))
+
         return users
 
     except Exception as e:
 
-        print("HC LOAD ERROR:", e)
+        print("HC LOAD ERROR:", repr(e))
 
         return set()
+
 
 def refresh_valid_users():
 
     try:
 
+        print("HC CACHE REFRESH START")
+
         sheet = connect_sheet().worksheet("HC")
+
+        print("HC SHEET OPENED")
 
         values = sheet.col_values(1)
 
+        print("HC ROWS:", len(values))
+
         r.delete("valid_users")
+
+        count = 0
 
         for v in values[1:]:
 
@@ -100,12 +119,14 @@ def refresh_valid_users():
 
                 r.sadd("valid_users", v)
 
-        print("VALID USERS UPDATED:", len(values) - 1)
+                count += 1
+
+        print("VALID USERS UPDATED:", count)
 
     except Exception as e:
 
-        print("VALID USERS ERROR:", e)
-
+        print("VALID USERS ERROR:", repr(e))
+        
 # ===== LOG WORKER =====
 def log_worker():
     sheet = connect_sheet().worksheet("log")
