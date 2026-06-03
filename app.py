@@ -198,34 +198,16 @@ def valid_users_worker():
 
     print("VALID USERS WORKER STARTED")
 
-    print(
-        "VALID USERS IN REDIS:",
-        r.scard("valid_users")
-    )
-
-    refresh_valid_users()
-
-    print(
-        "VALID USERS IN REDIS AFTER REFRESH:",
-        r.scard("valid_users")
-    )
-
     while True:
 
         time.sleep(300)
 
-        refresh_valid_users()
 
-        print(
-            "VALID USERS IN REDIS AFTER REFRESH:",
-            r.scard("valid_users")
-        )
+# threading.Thread(
+#     target=valid_users_worker,
+#     daemon=True
+# ).start()
 
-
-threading.Thread(
-    target=valid_users_worker,
-    daemon=True
-).start()
 # ===== TYPE DETECTION =====
 def detect_order_type(susr3):
 
@@ -1086,10 +1068,9 @@ def index():
 
     if user:
 
-        if user != "admin" and not r.sismember(
-            "valid_users",
-            user
-        ):
+        valid_users = get_valid_users()
+
+        if user != "admin" and user not in valid_users:
 
             return render_template_string(
                 HTML,
