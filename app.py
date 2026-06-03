@@ -82,19 +82,52 @@ def get_valid_users():
 
         return set()
 
+def refresh_valid_users():
+
+    try:
+
+        sheet = connect_sheet().worksheet("HC")
+
+        values = sheet.col_values(1)
+
+        r.delete("valid_users")
+
+        for v in values[1:]:
+
+            v = str(v).strip()
+
+            if v:
+
+                r.sadd("valid_users", v)
+
+        print("VALID USERS UPDATED:", len(values) - 1)
+
+    except Exception as e:
+
+        print("VALID USERS ERROR:", e)
+
 # ===== LOG WORKER =====
 def log_worker():
     sheet = connect_sheet().worksheet("log")
+
     while True:
+
         item = r.rpoplpush("log_queue", "log_processing")
+
         if item:
+
             data = json.loads(item)
+
             if r.sismember("logged_ids", data.get("id")):
                 r.lrem("log_processing", 1, item)
                 continue
+
             try:
+
                 rows = []
+
                 for o in data["orders"]:
+
                     rows.append([
                         data["user"],
                         o.get("order", ""),
@@ -103,15 +136,45 @@ def log_worker():
                         time.strftime("%Y-%m-%d %H:%M:%S"),
                         data.get("status", "CONFIRMED")
                     ])
+
                 sheet.append_rows(rows)
+
                 r.sadd("logged_ids", data.get("id"))
+
                 r.lrem("log_processing", 1, item)
+
             except Exception as e:
+
                 print("LOG ERROR:", e)
+
                 time.sleep(2)
+
         time.sleep(1)
 
-threading.Thread(target=log_worker, daemon=True).start()
+
+threading.Thread(
+    target=log_worker,
+    daemon=True
+).start()
+
+
+# ===== VALID USERS CACHE =====
+def valid_users_worker():
+
+    refresh_valid_users()
+
+    while True:
+
+        time.sleep(300)
+
+        refresh_valid_users()
+
+
+threading.Thread(
+    target=valid_users_worker,
+    daemon=True
+).start()
+
 
 # ===== TYPE DETECTION =====
 def detect_order_type(susr3):
@@ -973,9 +1036,10 @@ def index():
 
     if user:
 
-        valid_users = get_valid_users()
-
-        if user != "admin" and user not in valid_users:
+        if user != "admin" and not r.sismember(
+            "valid_users",
+            user
+        ):
 
             return render_template_string(
                 HTML,
