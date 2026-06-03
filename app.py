@@ -161,6 +161,8 @@ threading.Thread(
 # ===== VALID USERS CACHE =====
 def valid_users_worker():
 
+    print("VALID USERS WORKER STARTED")
+
     refresh_valid_users()
 
     while True:
@@ -174,7 +176,6 @@ threading.Thread(
     target=valid_users_worker,
     daemon=True
 ).start()
-
 
 # ===== TYPE DETECTION =====
 def detect_order_type(susr3):
