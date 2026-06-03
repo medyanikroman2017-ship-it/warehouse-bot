@@ -198,7 +198,17 @@ def valid_users_worker():
 
     print("VALID USERS WORKER STARTED")
 
+    print(
+        "VALID USERS IN REDIS:",
+        r.scard("valid_users")
+    )
+
     refresh_valid_users()
+
+    print(
+        "VALID USERS IN REDIS AFTER REFRESH:",
+        r.scard("valid_users")
+    )
 
     while True:
 
@@ -206,12 +216,16 @@ def valid_users_worker():
 
         refresh_valid_users()
 
+        print(
+            "VALID USERS IN REDIS AFTER REFRESH:",
+            r.scard("valid_users")
+        )
+
 
 threading.Thread(
     target=valid_users_worker,
     daemon=True
 ).start()
-
 # ===== TYPE DETECTION =====
 def detect_order_type(susr3):
 
