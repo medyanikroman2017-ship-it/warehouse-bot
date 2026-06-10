@@ -392,9 +392,47 @@ def assign_orders(user, order_type):
                 order_type or ""
             ).strip().upper()
 
+            # тот же тип → вернуть старые заказы
             if pending_type == requested_type:
 
                 return pending_orders, False, False
+
+            # =====================================
+            # RELEASE OLD PENDING
+            # =====================================
+            conn = get_conn()
+            cur = conn.cursor()
+
+            ids = [
+                o["order"]
+                for o in pending_orders
+            ]
+
+            cur.execute("""
+                UPDATE orders
+                SET assigned_to = NULL,
+                    assigned_at = NULL
+                WHERE order_id = ANY(%s)
+                  AND assigned = FALSE
+                  AND assigned_to = %s
+            """, (ids, user))
+
+            stores = list(set(
+                o["store"]
+                for o in pending_orders
+            ))
+
+            for s in stores:
+
+                cur.execute("""
+                    DELETE FROM store_locks
+                    WHERE store = %s
+                """, (s,))
+
+            conn.commit()
+            conn.close()
+
+            r.delete(f"pending:{user}")
 
 
     # =========================================
