@@ -836,6 +836,66 @@ def reload_hc():
             "message": str(e)
         }
 
+# ===== RELEASE USER =====
+@app.route("/release_user", methods=["POST"])
+def release_user():
+
+    admin = request.form.get("admin")
+    worker = request.form.get("worker")
+
+    if admin != "admin":
+        return {
+            "status": "error",
+            "message": "Unauthorized"
+        }, 403
+
+    try:
+
+        raw = r.get(f"pending:{worker}")
+
+        if raw:
+
+            orders = json.loads(raw)
+
+            conn = get_conn()
+            cur = conn.cursor()
+
+            ids = [o["order"] for o in orders]
+
+            cur.execute("""
+                UPDATE orders
+                SET assigned_to = NULL,
+                    assigned_at = NULL
+                WHERE order_id = ANY(%s)
+                  AND assigned = FALSE
+            """, (ids,))
+
+            stores = list(set(
+                o["store"]
+                for o in orders
+            ))
+
+            for s in stores:
+
+                cur.execute("""
+                    DELETE FROM store_locks
+                    WHERE store = %s
+                """, (s,))
+
+            conn.commit()
+            conn.close()
+
+            r.delete(f"pending:{worker}")
+
+        return {"status": "ok"}
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
 # ===== DASHBOARD UI =====
 @app.route("/dashboard")
 def dashboard():
@@ -924,6 +984,45 @@ async function reloadHC() {
         );
     }
 }
+
+async function releaseUser(worker) {
+
+    let admin = prompt("Введите admin ID:");
+
+    if (!admin) return;
+
+    if (!confirm(
+        "Освободить все заказы работника " + worker + " ?"
+    )) return;
+
+    let res = await fetch('/release_user', {
+        method: 'POST',
+        headers: {
+            "Content-Type":
+            "application/x-www-form-urlencoded"
+        },
+        body: new URLSearchParams({
+            admin: admin,
+            worker: worker
+        })
+    });
+
+    let data = await res.json();
+
+    if (data.status === "ok") {
+
+        alert("✅ Заказы освобождены");
+
+        load();
+
+    } else {
+
+        alert(
+            "❌ Ошибка: " + data.message
+        );
+    }
+}
+
 async function load() {
     let res = await fetch('/dashboard_data');
     let data = await res.json();
@@ -942,7 +1041,11 @@ async function load() {
             "Orders: " + u.orders + "<br>" +
             "Stores: " + u.stores.join(", ") + "<br>" +
             (u.pending ? "⚠️ NOT CONFIRMED" : "✅ OK") + "<br>" +
-            "⏱ Since: " + formatTime(u.oldest) + "</div>";
+            "⏱ Since: " + formatTime(u.oldest) + "<br>" +
+            "<button onclick='releaseUser(\"" + w + "\")'>" +
+            "🔓 RELEASE" +
+            "</button>" +
+            "</div>";
     }
     document.getElementById('workers').innerHTML = html;
 }
