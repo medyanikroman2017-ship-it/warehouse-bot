@@ -1148,9 +1148,10 @@ def index():
 
     if user:
 
-        valid_users = get_valid_users()
-
-        if user != "admin" and user not in valid_users:
+        if user != "admin" and not r.sismember(
+            "valid_users",
+            str(user).strip()
+        ):
 
             return render_template_string(
                 HTML,
