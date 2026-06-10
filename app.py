@@ -1041,10 +1041,7 @@ async function load() {
             "Orders: " + u.orders + "<br>" +
             "Stores: " + u.stores.join(", ") + "<br>" +
             (u.pending ? "⚠️ NOT CONFIRMED" : "✅ OK") + "<br>" +
-            "⏱ Since: " + formatTime(u.oldest) + "<br>" +
-            "<button onclick=\"releaseUser('" + w + "')\">" +
-            "🔓 RELEASE" +
-            "</button>" +
+            "⏱ Since: " + formatTime(u.oldest) +
             "</div>";
     }
     document.getElementById('workers').innerHTML = html;
