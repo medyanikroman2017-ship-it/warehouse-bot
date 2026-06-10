@@ -1042,7 +1042,7 @@ async function load() {
             "Stores: " + u.stores.join(", ") + "<br>" +
             (u.pending ? "⚠️ NOT CONFIRMED" : "✅ OK") + "<br>" +
             "⏱ Since: " + formatTime(u.oldest) + "<br>" +
-            "<button onclick='releaseUser(\"" + w + "\")'>" +
+            "<button onclick=\"releaseUser('" + w + "')\">" +
             "🔓 RELEASE" +
             "</button>" +
             "</div>";
