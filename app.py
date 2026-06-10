@@ -667,11 +667,12 @@ def confirm_orders(user):
 # ===== DASHBOARD DATA =====
 @app.route("/dashboard_data")
 def dashboard_data():
+
     conn = get_conn()
     cur = conn.cursor()
 
     cur.execute("""
-        SELECT assigned_to, store, total_lines, assigned_at
+        SELECT assigned_to, store, total_lines, qty, assigned_at
         FROM orders
         WHERE assigned = FALSE
           AND assigned_to IS NOT NULL
@@ -679,30 +680,42 @@ def dashboard_data():
     rows = cur.fetchall()
 
     cur.execute("""
-        SELECT COUNT(*), COALESCE(SUM(total_lines), 0)
+        SELECT
+            COUNT(*),
+            COALESCE(SUM(total_lines), 0),
+            COALESCE(SUM(qty), 0)
         FROM orders
         WHERE assigned = FALSE
     """)
-    total_orders, total_lines = cur.fetchone()
+    total_orders, total_lines, total_qty = cur.fetchone()
+
     conn.close()
 
     workers = {}
-    for worker, store, lines, assigned_at in rows:
+
+    for worker, store, lines, qty, assigned_at in rows:
+
         if not worker:
             continue
+
         workers.setdefault(worker, {
             "lines": 0,
+            "qty": 0,
             "orders": 0,
             "stores": set(),
             "pending": False,
             "oldest": assigned_at
         })
+
         workers[worker]["lines"] += int(lines or 0)
+        workers[worker]["qty"] += int(qty or 0)
         workers[worker]["orders"] += 1
         workers[worker]["stores"].add(store)
+
         if assigned_at and workers[worker]["oldest"]:
             if assigned_at < workers[worker]["oldest"]:
                 workers[worker]["oldest"] = assigned_at
+
         workers[worker]["pending"] = True
 
     for w in workers:
@@ -711,9 +724,9 @@ def dashboard_data():
     return {
         "workers": workers,
         "total_orders": int(total_orders or 0),
-        "total_lines": int(total_lines or 0)
+        "total_lines": int(total_lines or 0),
+        "total_qty": int(total_qty or 0)
     }
-
 
 # ===== RESET SYSTEM =====
 @app.route("/reset", methods=["POST"])
@@ -796,6 +809,7 @@ async function load() {
     let data = await res.json();
     document.getElementById('summary').innerHTML =
         "<div class='big'>Remaining lines: " + data.total_lines + "</div>" +
+        "<div>Remaining qty: " + data.total_qty + "</div>" +
         "<div>Remaining orders: " + data.total_orders + "</div>";
     let html = "";
     for (let w in data.workers) {
