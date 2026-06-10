@@ -851,41 +851,37 @@ def release_user():
 
     try:
 
-        raw = r.get(f"pending:{worker}")
+        conn = get_conn()
+        cur = conn.cursor()
 
-        if raw:
+        cur.execute("""
+            SELECT DISTINCT store
+            FROM orders
+            WHERE assigned_to = %s
+              AND assigned = FALSE
+        """, (worker,))
 
-            orders = json.loads(raw)
+        stores = [r[0] for r in cur.fetchall()]
 
-            conn = get_conn()
-            cur = conn.cursor()
+        cur.execute("""
+            UPDATE orders
+            SET assigned_to = NULL,
+                assigned_at = NULL
+            WHERE assigned_to = %s
+              AND assigned = FALSE
+        """, (worker,))
 
-            ids = [o["order"] for o in orders]
+        for s in stores:
 
             cur.execute("""
-                UPDATE orders
-                SET assigned_to = NULL,
-                    assigned_at = NULL
-                WHERE order_id = ANY(%s)
-                  AND assigned = FALSE
-            """, (ids,))
+                DELETE FROM store_locks
+                WHERE store = %s
+            """, (s,))
 
-            stores = list(set(
-                o["store"]
-                for o in orders
-            ))
+        conn.commit()
+        conn.close()
 
-            for s in stores:
-
-                cur.execute("""
-                    DELETE FROM store_locks
-                    WHERE store = %s
-                """, (s,))
-
-            conn.commit()
-            conn.close()
-
-            r.delete(f"pending:{worker}")
+        r.delete(f"pending:{worker}")
 
         return {"status": "ok"}
 
