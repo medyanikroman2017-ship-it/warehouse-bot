@@ -803,6 +803,7 @@ button { margin-bottom:10px; padding:10px; font-size:16px; background:#ff4444; c
 <body>
 <h2>📊 Dashboard</h2>
 <button onclick="resetSystem()">🔄 RESET SYSTEM</button>
+<button onclick="reloadHC()">👥 RELOAD HC</button>
 <div id="summary" class="card"></div>
 <div id="workers"></div>
 <script>
@@ -832,6 +833,42 @@ async function resetSystem() {
         alert("❌ Ошибка: " + data.message);
     }
     load();
+}
+async function reloadHC() {
+
+    let user = prompt("Введите admin ID:");
+
+    if (!user) {
+        alert("❌ Отменено");
+        return;
+    }
+
+    let res = await fetch('/reload_hc', {
+        method: 'POST',
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: new URLSearchParams({
+            user: user
+        })
+    });
+
+    let data = await res.json();
+
+    if (data.status === "ok") {
+
+        alert(
+            "✅ HC загружен. Пользователей: "
+            + data.users
+        );
+
+    } else {
+
+        alert(
+            "❌ Ошибка: "
+            + data.message
+        );
+    }
 }
 async function load() {
     let res = await fetch('/dashboard_data');
