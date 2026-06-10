@@ -752,6 +752,35 @@ def reset_system():
     except Exception as e:
         return {"status": "error", "message": str(e)}
 
+# ===== RELOAD HC =====
+@app.route("/reload_hc", methods=["POST"])
+def reload_hc():
+
+    user = request.form.get("user") or request.headers.get("X-USER")
+
+    if user != "admin":
+        return {
+            "status": "error",
+            "message": "Unauthorized"
+        }, 403
+
+    try:
+
+        refresh_valid_users()
+
+        count = r.scard("valid_users")
+
+        return {
+            "status": "ok",
+            "users": count
+        }
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "message": str(e)
+        }
 
 # ===== DASHBOARD UI =====
 @app.route("/dashboard")
