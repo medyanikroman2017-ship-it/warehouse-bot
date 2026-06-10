@@ -1041,10 +1041,25 @@ async function load() {
             "Orders: " + u.orders + "<br>" +
             "Stores: " + u.stores.join(", ") + "<br>" +
             (u.pending ? "⚠️ NOT CONFIRMED" : "✅ OK") + "<br>" +
-            "⏱ Since: " + formatTime(u.oldest) +
+            "⏱ Since: " + formatTime(u.oldest) + "<br>" +
+            "<button data-user='" + w + "' class='release-btn'>" +
+            "🔓 RELEASE" +
+            "</button>" +
             "</div>";
     }
     document.getElementById('workers').innerHTML = html;
+
+    document.querySelectorAll('.release-btn').forEach(btn => {
+
+    btn.onclick = function() {
+
+        releaseUser(
+            this.getAttribute('data-user')
+        );
+
+    };
+
+});
 }
 load();
 setInterval(load, 5000);
