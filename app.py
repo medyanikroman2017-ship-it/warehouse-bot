@@ -377,7 +377,24 @@ def assign_orders(user, order_type):
     pending = r.get(f"pending:{user}")
 
     if pending:
-        return json.loads(pending), False, False
+
+        pending_orders = json.loads(pending)
+
+        if pending_orders:
+
+            pending_type = (
+                pending_orders[0]
+                .get("order_type", "")
+                .upper()
+            )
+
+            requested_type = (
+                order_type or ""
+            ).strip().upper()
+
+            if pending_type == requested_type:
+
+                return pending_orders, False, False
 
 
     # =========================================
@@ -410,7 +427,6 @@ def assign_orders(user, order_type):
             conn.commit()
             conn.close()
 
-            # already taken by someone else
             if len(updated) != len(ids):
 
                 r.delete(SPLIT_KEY)
