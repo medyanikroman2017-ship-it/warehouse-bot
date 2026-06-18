@@ -1259,13 +1259,16 @@ function toggleMyOrders() {
     }
 }
 
-let hasOrders = {{ 'true' if orders else 'false' }};
-let confirmed = {{ 'true' if success else 'false' }};
+let hasPending =
+    {{ 'true' if pending_exists else 'false' }};
+
 let WARNING_TIME = 2 * 60 * 1000;
 let triggered = false;
 
-if (!hasOrders || confirmed) {
+if (!hasPending) {
+
     console.log("NO WARNING");
+
 } else {
     let startTime = Date.now();
     let timer = setInterval(() => {
@@ -1372,8 +1375,8 @@ def index():
         # ===== MY ORDERS =====
         elif action == "my_orders":
 
-            orders = get_user_orders(user)        
-        
+            orders = get_user_orders(user)
+
         # ===== GET ORDERS =====
         else:
 
@@ -1387,15 +1390,17 @@ def index():
 
                 if action == "get" and user and not orders:
                     no_orders = True
-                               
+
     return render_template_string(
         HTML,
         orders=orders,
         user=user,
         no_orders=no_orders,
-        success=success
+        success=success,
+        pending_exists=bool(
+            user and r.get(f"pending:{user}")
+        )
     )
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
