@@ -998,8 +998,7 @@ async function loadPriority() {
     alert(
          "Получено строк: " +
          text.split("\n").length
-    );
-    
+    );   
 }
 
 async function releaseUser(worker) {
