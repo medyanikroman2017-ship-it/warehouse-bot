@@ -526,14 +526,26 @@ def assign_orders(user, order_type):
     # =========================================
     # SORT BY PRIORITY
     # =========================================
+
+    priority = r.lrange("priority_list", 0, -1)
+
+    priority_map = {
+        store: i
+        for i, store in enumerate(priority)
+    }
+
     sorted_stores = sorted(
         stores.keys(),
         key=lambda s: (
+
+            priority_map.get(s, 999999),
+
             get_store_priority(s),
+
             s
+
         )
     )
-
 
     # =========================================
     # TAKE FIRST AVAILABLE STORE
