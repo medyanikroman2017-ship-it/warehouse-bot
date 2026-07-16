@@ -836,6 +836,50 @@ def reload_hc():
             "message": str(e)
         }
 
+# ===== SAVE PRIORITY =====
+@app.route("/save_priority", methods=["POST"])
+def save_priority():
+
+    admin = request.form.get("admin")
+
+    if admin != "admin":
+        return {
+            "status": "error",
+            "message": "Unauthorized"
+        }, 403
+
+    try:
+
+        text = request.form.get("priority", "")
+
+        stores = []
+
+        for line in text.splitlines():
+
+            line = line.strip()
+
+            if line:
+
+                stores.append(line)
+
+        r.delete("priority_list")
+
+        if stores:
+
+            r.rpush("priority_list", *stores)
+
+        return {
+            "status": "ok",
+            "count": len(stores)
+        }
+
+    except Exception as e:
+
+        return {
+            "status": "error",
+            "message": str(e)
+        }, 500
+
 # ===== RELEASE USER =====
 @app.route("/release_user", methods=["POST"])
 def release_user():
