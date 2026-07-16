@@ -4,7 +4,7 @@ import redis
 import psycopg2
 import pandas as pd
 import gspread
-from psycopg2.extras import execute_values
+from psycopg2.extras import execute_values<div id="workers"></div>
 from oauth2client.service_account import ServiceAccountCredentials
 
 app = Flask(__name__)
@@ -914,7 +914,35 @@ button { margin-bottom:10px; padding:10px; font-size:16px; background:#ff4444; c
 <h2>📊 Dashboard</h2>
 <button onclick="resetSystem()">🔄 RESET SYSTEM</button>
 <button onclick="reloadHC()">👥 RELOAD HC</button>
+<button onclick="togglePriority()">⭐ LOAD PRIORITY</button>
 <div id="summary" class="card"></div>
+
+<div id="priority-box"
+     style="display:none;
+            margin:15px 0;
+            background:white;
+            padding:15px;
+            border-radius:10px;">
+
+    <h3>⭐ Priority List</h3>
+
+    <textarea
+        id="priority-text"
+        style="
+            width:100%;
+            height:300px;
+            font-size:15px;
+            font-family:monospace;
+        "
+        placeholder="Вставьте список магазинов..."
+    ></textarea>
+
+    <button onclick="savePriority()">
+        💾 SAVE PRIORITY
+    </button>
+
+</div>
+
 <div id="workers"></div>
 <script>
 function getColor(lines){
