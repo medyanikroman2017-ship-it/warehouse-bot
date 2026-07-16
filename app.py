@@ -1009,6 +1009,29 @@ async function reloadHC() {
     }
 }
 
+// ===== PRIORITY =====
+function togglePriority() {
+
+    let box = document.getElementById("priority-box");
+
+    if (box.style.display === "none") {
+
+        box.style.display = "block";
+
+    } else {
+
+        box.style.display = "none";
+
+    }
+
+}
+
+function savePriority() {
+
+    alert("Следующим шагом подключим сохранение.");
+
+}
+
 async function releaseUser(worker) {
 
     let admin = prompt("Введите admin ID:");
