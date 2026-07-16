@@ -914,6 +914,7 @@ button { margin-bottom:10px; padding:10px; font-size:16px; background:#ff4444; c
 <h2>📊 Dashboard</h2>
 <button onclick="resetSystem()">🔄 RESET SYSTEM</button>
 <button onclick="reloadHC()">👥 RELOAD HC</button>
+<button onclick="loadPriority()">⭐ LOAD PRIORITY</button>
 <div id="summary" class="card"></div>
 <div id="workers"></div>
 <script>
@@ -979,6 +980,13 @@ async function reloadHC() {
             + data.message
         );
     }
+}
+
+// ===== LOAD PRIORITY =====
+async function loadPriority() {
+
+    alert("В следующем шаге здесь будет загрузка приоритетов.");
+
 }
 
 async function releaseUser(worker) {
