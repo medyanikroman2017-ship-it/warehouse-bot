@@ -981,25 +981,6 @@ async function reloadHC() {
     }
 }
 
-// ===== LOAD PRIORITY =====
-async function loadPriority() {
-
-    let admin = prompt("Введите admin ID:");
-
-    if (!admin) return;
-
-    let text = prompt(
-        "Вставьте список магазинов (по одному в строке):"
-    );
-
-    if (!text) return;
-
-    alert(
-         "Получено строк: " +
-         text.split("\n").length
-    );   
-}
-
 async function releaseUser(worker) {
 
     let admin = prompt("Введите admin ID:");
