@@ -4,7 +4,7 @@ import redis
 import psycopg2
 import pandas as pd
 import gspread
-from psycopg2.extras import execute_values<div id="workers"></div>
+from psycopg2.extras import execute_values
 from oauth2client.service_account import ServiceAccountCredentials
 
 app = Flask(__name__)
