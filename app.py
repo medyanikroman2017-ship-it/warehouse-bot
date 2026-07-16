@@ -1070,9 +1070,49 @@ function togglePriority() {
 
 }
 
-function savePriority() {
+async function savePriority() {
 
-    alert("Следующим шагом подключим сохранение.");
+    let admin = prompt("Введите admin ID:");
+
+    if (!admin) return;
+
+    let text = document
+        .getElementById("priority-text")
+        .value;
+
+    let res = await fetch('/save_priority', {
+        method: 'POST',
+        headers: {
+            "Content-Type":
+            "application/x-www-form-urlencoded"
+        },
+        body: new URLSearchParams({
+            admin: admin,
+            priority: text
+        })
+    });
+
+    let data = await res.json();
+
+    if (data.status === "ok") {
+
+        alert(
+            "✅ Загружено магазинов: "
+            + data.count
+        );
+
+        document.getElementById(
+            "priority-box"
+        ).style.display = "none";
+
+    } else {
+
+        alert(
+            "❌ Ошибка: "
+            + data.message
+        );
+
+    }
 
 }
 
