@@ -526,26 +526,36 @@ def assign_orders(user, order_type):
     # =========================================
     # SORT BY PRIORITY
     # =========================================
-
-    priority = r.lrange("priority_list", 0, -1)
-
-    priority_map = {
-        store: i
-        for i, store in enumerate(priority)
-    }
-
-    sorted_stores = sorted(
-        stores.keys(),
-        key=lambda s: (
-
-            priority_map.get(s, 999999),
-
-            get_store_priority(s),
-
-            s
-
+    
+    if order_type == "REPLENISHMENT":
+    
+        # Manual priority applies ONLY to REPLENISHMENT
+        priority = r.lrange("priority_list", 0, -1)
+    
+        priority_map = {
+            str(store).strip(): i
+            for i, store in enumerate(priority)
+        }
+    
+        sorted_stores = sorted(
+            stores.keys(),
+            key=lambda s: (
+                priority_map.get(str(s).strip(), 999999),
+                get_store_priority(s),
+                s
+            )
         )
-    )
+    
+    else:
+    
+        # NEW_LINES and TOP_STORE use the original logic
+        sorted_stores = sorted(
+            stores.keys(),
+            key=lambda s: (
+                get_store_priority(s),
+                s
+            )
+        )
 
     # =========================================
     # TAKE FIRST AVAILABLE STORE
@@ -813,6 +823,8 @@ def reset_system():
         for key in r.keys("pending:*"):
             r.delete(key)
         r.delete(SPLIT_KEY)
+
+        r.delete("priority_list")
 
         return {"status": "ok"}
     except Exception as e:
