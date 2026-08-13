@@ -143,8 +143,7 @@ def refresh_valid_users():
         
 # ===== LOG WORKER =====
 def log_worker():
-    sheet = connect_sheet().worksheet("log")
-
+    
     while True:
 
         item = r.rpoplpush("log_queue", "log_processing")
@@ -171,6 +170,8 @@ def log_worker():
                         time.strftime("%Y-%m-%d %H:%M:%S"),
                         data.get("status", "CONFIRMED")
                     ])
+
+                sheet = connect_sheet().worksheet("log")
 
                 sheet.append_rows(rows)
 
