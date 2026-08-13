@@ -180,7 +180,7 @@ def log_worker():
 
             except Exception as e:
 
-                print("LOG ERROR:", e)
+                print("LOG ERROR:", repr(e))
 
                 time.sleep(2)
 
